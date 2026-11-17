@@ -1,0 +1,11 @@
+{
+  "apk": "aict-demo-0.4.1.apk",
+  "bytes": 54760653,
+  "sha256": "86733476bcedc4d30f4871a35b72623405a48e2e523d957fd62fdd3ff908e489",
+  "dex_count": 9,
+  "runtime_signatures_checked": 15,
+  "endpoint": "zhyzbklqx.gicp.net:19198",
+  "embedded_credential": true,
+  "host_key_pinning": true,
+  "evidence": "static inspection of 0.4.1; 0.1.0 live Android 16 script error and guarded file roundtrip verified separately"
+}

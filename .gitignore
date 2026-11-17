@@ -1,0 +1,18 @@
+.tools/
+.build/
+.secrets/
+vendor/
+upstream-autojs6/
+dist/*.apk
+dist/*.idsig
+server/__pycache__/
+server/run/
+server/data/
+.release.json
+client/assets/connection.json
+
+# Generated release bundles and UI previews
+dist/*.zip
+dist/*.png
+dist/*.jpg
+dist/*.jpeg
