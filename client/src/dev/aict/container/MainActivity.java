@@ -396,7 +396,7 @@ public final class MainActivity extends Activity {
                 private boolean addCopyContext(Menu menu) {
                     if (menu.findItem(COPY_CONTEXT) != null) return false;
                     menu.add(Menu.NONE, COPY_CONTEXT, Menu.CATEGORY_SECONDARY, "复制上下文")
-                        .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+                        .setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS);
                     return true;
                 }
 
