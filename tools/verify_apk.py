@@ -1,4 +1,5 @@
 """Check the actual APK's runtime interfaces and embedded configuration without logging keys."""
+import sys
 import hashlib
 import json
 import struct
@@ -36,7 +37,7 @@ def methods(data):
     return result
 
 
-apk = ROOT / 'dist/aict-demo-0.4.1.apk'
+apk = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / 'dist/aict-demo-0.4.1.apk'
 with zipfile.ZipFile(apk) as archive:
     all_methods = set()
     dex_files = [n for n in archive.namelist() if n.endswith('.dex')]
@@ -70,13 +71,14 @@ with zipfile.ZipFile(apk) as archive:
     if compiled_dex.exists():
         assert archive.read('classes9.dex') == compiled_dex.read_bytes(), 'Packaged client DEX differs from compiled source'
     assert archive.read('assets/phone.js') == (ROOT / 'server/web/phone.js').read_bytes(), 'Packaged SDK is stale'
+    assert archive.read('assets/webview-copy-context.js') == (ROOT / 'client/assets/webview-copy-context.js').read_bytes(), 'Packaged copy context script is stale'
     report = {
         'apk': apk.name, 'bytes': apk.stat().st_size,
         'sha256': hashlib.sha256(apk.read_bytes()).hexdigest(),
         'dex_count': len(dex_files), 'runtime_signatures_checked': len(required),
         'endpoint': f"{config['host']}:{config['port']}",
         'embedded_credential': True, 'host_key_pinning': True,
-        'evidence': 'static inspection of 0.4.1; 0.1.0 live Android 16 script error and guarded file roundtrip verified separately',
+        'evidence': 'static APK inspection only; device installation and runtime are separate checks',
     }
-(ROOT / 'dist/build-report.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
+(apk.with_suffix('.build-report.json')).write_text(json.dumps(report, indent=2), encoding='utf-8')
 print(json.dumps(report, indent=2))

@@ -1,4 +1,6 @@
-param(
+﻿param(
+    [string]$ConnectionConfig = "",
+    [string]$OutputApk = "dist/aict-demo-0.4.1.apk",
     [string]$SdkPlatform = 'D:\Projects\AIProjects\bettergpt\.checks\sdk\android-35',
     [string]$BuildTools = 'D:\Projects\AIProjects\bettergpt\.checks\sdk\android-15',
     [string]$Jdk = 'C:\Program Files\Java\jdk-11.0.7',
@@ -18,7 +20,9 @@ if (!(Test-Path client/assets/connection.json)) { Run $Python @('tools/provision
 if (!(Test-Path .build/template/AndroidManifest.xml)) {
     Run $RuntimeJava @('-jar',$Apktool,'d','-f','-s','-p','.build/framework35','.tools/template.apk','-o','.build/template')
 }
-Run $Python @('tools/prepare_apk.py')
+$prepareArgs = @('tools/prepare_apk.py')
+if ($ConnectionConfig) { $prepareArgs += @('--connection', $ConnectionConfig) }
+Run $Python $prepareArgs
 $sources = @(Get-ChildItem client/src -Recurse -Filter '*.java' | ForEach-Object FullName)
 Run "$Jdk/bin/javac.exe" (@('-encoding','UTF-8','-source','8','-target','8','-cp',"$android;$PWD/.tools/jsch.jar",'-d',"$PWD/.build/classes") + $sources)
 Run "$Jdk/bin/jar.exe" @('cf','.build/client.jar','-C','.build/classes','.')
@@ -34,6 +38,6 @@ Run "$BuildTools/zipalign.exe" @('-f','-p','4','.build/aict-unsigned.apk','.buil
 if (!(Test-Path .secrets/apk-signing.p12)) {
     Run "$Jdk/bin/keytool.exe" @('-genkeypair','-keystore','.secrets/apk-signing.p12','-storepass','aict-local-build','-keypass','aict-local-build','-alias','aict','-dname','CN=AICT Local Distribution','-keyalg','RSA','-keysize','3072','-validity','10000')
 }
-Run $RuntimeJava @('-jar',"$BuildTools/lib/apksigner.jar",'sign','--ks','.secrets/apk-signing.p12','--ks-pass','pass:aict-local-build','--key-pass','pass:aict-local-build','--v4-signing-enabled','false','--out','dist/aict-demo-0.4.1.apk','.build/aict-aligned.apk')
-Run $RuntimeJava @('-jar',"$BuildTools/lib/apksigner.jar",'verify','--verbose','--print-certs','dist/aict-demo-0.4.1.apk')
-Get-FileHash dist/aict-demo-0.4.1.apk -Algorithm SHA256
+Run $RuntimeJava @('-jar',"$BuildTools/lib/apksigner.jar",'sign','--ks','.secrets/apk-signing.p12','--ks-pass','pass:aict-local-build','--key-pass','pass:aict-local-build','--v4-signing-enabled','false','--out',$OutputApk,'.build/aict-aligned.apk')
+Run $RuntimeJava @('-jar',"$BuildTools/lib/apksigner.jar",'verify','--verbose','--print-certs',$OutputApk)
+Get-FileHash $OutputApk -Algorithm SHA256

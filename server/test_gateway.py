@@ -2,6 +2,7 @@ import asyncio
 import json
 import sys
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +26,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         app.router.add_post('/echo', lambda r: self.echo(r))
         app.router.add_get('/ws', self.websocket)
         app.router.add_get('/sse', self.sse)
+        app.router.add_get('/api/devices', self.gateway.devices_api)
         app.router.add_get('/api/devices/{device}/events', self.gateway.events_api)
         app.router.add_get('/api/devices/{device}/events/ws', self.gateway.events_socket)
         self.runner = web.AppRunner(app)
@@ -44,6 +46,21 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.forward = await self.ssh.forward_local_port('127.0.0.1', 0, '127.0.0.1', self.config['proxy_port'])
         self.proxy_url = 'http://127.0.0.1:' + str(self.forward.get_port())
         self.base = 'http://127.0.0.1:' + str(self.http_port)
+
+    async def test_additional_user_key_is_bound_to_username(self):
+        second = asyncssh.generate_private_key('ssh-rsa', key_size=2048)
+        def read_user(path):
+            if Path(path).name == 'user2.pub':
+                return second.convert_to_public()
+            raise FileNotFoundError(path)
+        with patch('main.asyncssh.read_public_key', side_effect=read_user):
+            connection = await asyncssh.connect('127.0.0.1', self.ssh_port, username='user2', client_keys=[second], known_hosts=self.known)
+            connection.close()
+            await connection.wait_closed()
+            with self.assertRaises(asyncssh.PermissionDenied):
+                await asyncssh.connect('127.0.0.1', self.ssh_port, username='user2', client_keys=[self.client_key], known_hosts=self.known)
+            self.assertFalse(SSHServer(self.config).validate_public_key('../user2', second.convert_to_public()))
+            self.assertFalse(SSHServer(self.config).validate_public_key('unknown', second.convert_to_public()))
 
     async def echo(self, request):
         return web.Response(body=await request.read(), headers={'Set-Cookie': 'session=test; HttpOnly'})
@@ -126,6 +143,30 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await task)['result'], 'mock-only')
         writer.close()
         await writer.wait_closed()
+
+    async def test_device_list_requires_explicit_consent_and_updates_live(self):
+        reader, writer = await self.ssh.open_connection('127.0.0.1', self.config['control_port'], encoding='utf-8')
+        writer.write(json.dumps({'installationId': 'consent-phone'}) + '\n')
+        await writer.drain()
+        await reader.readline()
+        try:
+            async with aiohttp.ClientSession() as client:
+                async def listed():
+                    async with client.get(self.base + '/api/devices') as response:
+                        return await response.json()
+                self.assertEqual(await listed(), [])
+                for value, visible in [(True, True), (False, False), ('true', False), (True, True)]:
+                    writer.write(json.dumps({'type': 'deviceSettings', 'acceptRemoteControl': value}) + '\n')
+                    await writer.drain()
+                    for _ in range(100):
+                        if self.gateway.devices['consent-phone']['hello'].get('acceptRemoteControl') is (value is True):
+                            break
+                        await asyncio.sleep(.01)
+                    devices = await listed()
+                    self.assertEqual([d['installationId'] for d in devices], ['consent-phone'] if visible else [])
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
     async def test_wrong_key_rejected(self):
         bad_key = asyncssh.generate_private_key('ssh-rsa', key_size=2048)

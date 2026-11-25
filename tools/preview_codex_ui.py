@@ -91,7 +91,14 @@ async def emit(request):
 
 async def controls(request):
     return web.Response(text='<title>UI fixture controls</title><h1>Simulated UI test</h1>'
-        '<button onclick="fetch(\'/emit\',{method:\'POST\'})">Add tool events</button>', content_type='text/html')
+        '<button onclick="fetch(\'/emit\',{method:\'POST\'})">Add tool events</button>'
+        '<button onclick="fetch(\'/disconnect\',{method:\'POST\'})">Disconnect clients</button>', content_type='text/html')
+
+
+async def disconnect(request):
+    for socket in list(sockets):
+        await socket.close(code=1012, message=b'Fixture service restart')
+    return web.json_response({'ok': True})
 
 
 async def ws_handler(request):
@@ -134,6 +141,8 @@ app.router.add_get('/codex.js', script)
 app.router.add_get('/fixture.svg', fixture_image)
 app.router.add_get('/controls', controls)
 app.router.add_post('/emit', emit)
+app.router.add_post('/disconnect', disconnect)
+app.router.add_get('/api/devices', lambda request: web.json_response([{'installationId': 'preview-phone', 'model': '预览手机'}]))
 app.router.add_get('/api/codex/{device}/ws', ws_handler)
 if __name__ == '__main__':
     web.run_app(app, host='127.0.0.1', port=18869)

@@ -1,4 +1,5 @@
 """Overlay this project's source-built classes onto the official independent runtime."""
+import argparse
 import hashlib
 import json
 import shutil
@@ -8,6 +9,9 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+parser = argparse.ArgumentParser()
+parser.add_argument('--connection', type=Path, default=ROOT / 'client/assets/connection.json')
+options = parser.parse_args()
 TREE = ROOT / '.build/template'
 NS = 'http://schemas.android.com/apk/res/android'
 ET.register_namespace('android', NS)
@@ -32,7 +36,35 @@ for activity in app.findall('activity'):
         if any(c.get(a('name')) == 'android.intent.category.LAUNCHER' for c in intent.findall('category')):
             activity.remove(intent)
 
-for name in ('android.permission.FOREGROUND_SERVICE_SPECIAL_USE', 'android.permission.BLUETOOTH_CONNECT', 'android.permission.BLUETOOTH_SCAN'):
+for name in (
+    'android.permission.FOREGROUND_SERVICE_SPECIAL_USE',
+    'android.permission.BLUETOOTH_CONNECT',
+    'android.permission.BLUETOOTH_SCAN',
+    'android.permission.USE_BIOMETRIC',
+    'android.permission.USE_FINGERPRINT',
+    'android.permission.ACCESS_BACKGROUND_LOCATION',
+    'android.permission.ACTIVITY_RECOGNITION',
+    'android.permission.BODY_SENSORS',
+    'android.permission.BODY_SENSORS_BACKGROUND',
+    'android.permission.READ_CALL_LOG',
+    'android.permission.WRITE_CALL_LOG',
+    'android.permission.ANSWER_PHONE_CALLS',
+    'android.permission.READ_PHONE_NUMBERS',
+    'android.permission.RECEIVE_MMS',
+    'android.permission.RECEIVE_WAP_PUSH',
+    'android.permission.READ_EXTERNAL_STORAGE',
+    'android.permission.WRITE_EXTERNAL_STORAGE',
+    'android.permission.NEARBY_WIFI_DEVICES',
+    'android.permission.UWB_RANGING',
+    'android.permission.HIGH_SAMPLING_RATE_SENSORS',
+    'android.permission.FOREGROUND_SERVICE_CAMERA',
+    'android.permission.FOREGROUND_SERVICE_MICROPHONE',
+    'android.permission.FOREGROUND_SERVICE_LOCATION',
+    'android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE',
+    'android.permission.FOREGROUND_SERVICE_DATA_SYNC',
+    'android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK',
+    'android.permission.FOREGROUND_SERVICE_HEALTH',
+):
     if not any(p.get(a('name')) == name for p in root.findall('uses-permission')):
         ET.SubElement(root, 'uses-permission', {a('name'): name})
 
@@ -91,8 +123,9 @@ ET.SubElement(resources, 'string', {'name': 'aict_vision_description'}).text = '
 ET.ElementTree(resources).write(TREE / 'res/values/aict.xml', encoding='utf-8', xml_declaration=True)
 
 assets = TREE / 'assets'
-shutil.copy(ROOT / 'client/assets/connection.json', assets / 'connection.json')
+shutil.copy(options.connection, assets / 'connection.json')
 shutil.copy(ROOT / 'server/web/phone.js', assets / 'phone.js')
+shutil.copy(ROOT / 'client/assets/webview-copy-context.js', assets / 'webview-copy-context.js')
 project = assets / 'project'
 project.mkdir(exist_ok=True)
 (project / 'project.json').write_text(json.dumps({'name': 'AIct', 'packageName': 'org.autojs.autojs6.inrt',

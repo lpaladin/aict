@@ -126,6 +126,7 @@ public final class MainActivity extends Activity {
                 }));
             }
         }, "AICTNative");
+        final boolean contextAtDocumentStart = installCopyContext(w);
         try {
             String sdk = asset("phone.js");
             Class<?> compat = Class.forName("androidx.webkit.WebViewCompat");
@@ -146,6 +147,10 @@ public final class MainActivity extends Activity {
                 loading.remove(view);
                 try { view.evaluateJavascript(asset("phone.js"), null); }
                 catch (Exception e) { status.setText(e.toString()); }
+                if (!contextAtDocumentStart) {
+                    try { view.evaluateJavascript(asset("webview-copy-context.js"), null); }
+                    catch (IOException e) { android.util.Log.w("AICT", "Copy context script unavailable", e); }
+                }
                 CookieManager.getInstance().flush();
                 updateTabs();
             }
@@ -253,6 +258,18 @@ public final class MainActivity extends Activity {
         if(code==903)grantWebPermission();
         if(code==904&&locationCallback!=null){locationCallback.invoke(locationOrigin,checkSelfPermission("android.permission.ACCESS_FINE_LOCATION")==PackageManager.PERMISSION_GRANTED||checkSelfPermission("android.permission.ACCESS_COARSE_LOCATION")==PackageManager.PERMISSION_GRANTED,false);locationCallback=null;}
     }
+    private boolean installCopyContext(WebView view) {
+        try {
+            Class<?> compat = Class.forName("androidx.webkit.WebViewCompat");
+            compat.getMethod("addDocumentStartJavaScript", WebView.class, String.class, Set.class)
+                .invoke(null, view, asset("webview-copy-context.js"), Collections.singleton("*"));
+            return true;
+        } catch (Exception e) {
+            android.util.Log.w("AICT", "Copy context will load after navigation", e);
+            return false;
+        }
+    }
+
     private String asset(String name) throws IOException {
         try (InputStream input = getAssets().open(name); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             byte[] buffer = new byte[8192]; int n;

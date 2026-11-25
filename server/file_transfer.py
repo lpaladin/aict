@@ -1,4 +1,5 @@
 """Opaque file transport: bytes never pass through the model's context."""
+import asyncio
 import base64
 import hashlib
 import uuid
@@ -6,6 +7,8 @@ from pathlib import Path, PurePosixPath
 
 CHUNK = 192 * 1024
 MAX_BYTES = 512 * 1024 * 1024
+
+PHONE_HASH_SCRIPT = "\nvar location = args.path || args.uri;\nvar input = location.indexOf('content:') === 0\n    ? context.getContentResolver().openInputStream(android.net.Uri.parse(location))\n    : new java.io.FileInputStream(location);\nif (input === null) throw Error('Cannot open destination for verification');\nvar digest = java.security.MessageDigest.getInstance('SHA-256');\nvar buffer = java.lang.reflect.Array.newInstance(java.lang.Byte.TYPE, 262144);\nvar count = 0, n;\ntry {\n    while ((n = input.read(buffer)) !== -1) {\n        if (aict.isCancelled()) throw Error('Verification cancelled');\n        count += n;\n        if (count > args.maxBytes) throw Error('Verification size limit exceeded');\n        digest.update(buffer, 0, n);\n    }\n} finally { input.close(); }\nvar bytes = digest.digest(), hex = '';\nfor (var i = 0; i < bytes.length; i++) {\n    var part = (bytes[i] & 255).toString(16);\n    hex += (part.length === 1 ? '0' : '') + part;\n}\n({bytes: count, sha256: hex});\n"
 
 
 def project_path(project, raw):
@@ -79,19 +82,12 @@ async def transfer(project, direction, params, thread_id=None):
                         await progress(count, 'transferring')
                     if not data:
                         break
-            # Re-read on the server, not through the agent, to verify persisted phone bytes.
+            # Read persisted bytes locally on Android; return only size and SHA-256.
             await progress(count, 'verifying')
-            check = hashlib.sha256()
-            offset = 0
-            while True:
-                data, eof = await read_phone(offset)
-                check.update(data)
-                offset += len(data)
-                if offset > MAX_BYTES:
-                    raise RuntimeError('Phone destination changed while verifying')
-                if eof:
-                    break
-            if offset != count or check.digest() != digest.digest():
+            check = await native(project, 'script.execute', {
+                'source': PHONE_HASH_SCRIPT,
+                'args': {**target, 'maxBytes': MAX_BYTES}, 'timeoutMs': 120000})
+            if check.get('bytes') != count or check.get('sha256') != digest.hexdigest():
                 raise RuntimeError('Phone readback SHA-256 mismatch')
         else:
             if local.exists() and not params.get('overwrite', False):
@@ -124,8 +120,11 @@ async def transfer(project, direction, params, thread_id=None):
         await progress(count, 'completed')
         return {'direction': direction, 'projectPath': str(local), 'phonePath': remote,
                 'bytes': count, 'sha256': digest.hexdigest(), 'verified': True,
-                'verification': 'phone readback' if direction == 'toPhone' else 'local readback of received bytes',
+                'verification': 'phone-local SHA-256 of persisted bytes' if direction == 'toPhone' else 'local readback of received bytes',
                 'contentIncluded': False}
+    except asyncio.CancelledError:
+        await progress(count, 'cancelled')
+        raise
     except BaseException:
         await progress(count, 'failed')
         raise
