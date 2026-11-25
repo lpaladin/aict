@@ -189,6 +189,61 @@
     scrollLatest();
     return entry;
   }
+  function appendToolCard(card) {
+    const previous = stream.lastElementChild;
+    if (previous?.classList.contains('action-stack')) {
+      previous.lastElementChild.append(card);
+      return;
+    }
+    if (!previous?.classList.contains('tool-card')) {
+      stream.append(card);
+      return;
+    }
+    const stack = document.createElement('details');
+    stack.className = 'action-stack';
+    const heading = document.createElement('summary');
+    heading.textContent = '展开动作';
+    const cards = document.createElement('div');
+    cards.className = 'action-stack-cards';
+    previous.replaceWith(stack);
+    cards.append(previous, card);
+    stack.append(heading, cards);
+    stack.addEventListener('toggle', () => {
+      if (followLatest) scrollLatest();
+    });
+  }
+
+  function updateActionStack(card) {
+    const stack = card.closest('.action-stack');
+    if (!stack) return;
+    const cards = stack.lastElementChild;
+    const busy = cards.querySelectorAll('[data-status="working"]').length;
+    const errors = cards.querySelectorAll('[data-status="error"]').length;
+    const summary = [cards.childElementCount + ' 个动作'];
+    if (busy) summary.push(busy + ' 个进行中');
+    if (errors) summary.push(errors + ' 个失败');
+    const heading = stack.firstElementChild;
+    const label = document.createElement('span');
+    label.className = 'action-stack-label';
+    label.textContent = summary.join(' · ');
+    const preview = document.createElement('span');
+    preview.className = 'action-stack-preview';
+    preview.setAttribute('aria-hidden', 'true');
+    for (const action of Array.from(cards.children).slice(-3)) {
+      const tile = document.createElement('span');
+      tile.className = 'action-stack-tile';
+      tile.dataset.status = action.dataset.status;
+      for (const part of ['tool-icon', 'tool-name', 'tool-status']) {
+        const text = document.createElement('span');
+        text.className = part;
+        text.textContent = action.querySelector('.' + part).textContent;
+        tile.append(text);
+      }
+      preview.append(tile);
+    }
+    heading.replaceChildren(label, preview);
+  }
+
   function renderItem(item) {
     if (item.type === 'agentMessage') message(item.id, 'Codex', item.text || '');
     else if (item.type === 'userMessage') message(item.id, '你', (item.content || []).map(c => c.text || (c.type === 'image' ? '[图片]' : '')).join('\n'), 'user');
@@ -200,7 +255,7 @@
         detail = document.createElement('details'); detail.id = id; detail.className = 'tool-card';
         const summary = document.createElement('summary');
         for (const cls of ['tool-icon', 'tool-name', 'tool-status', 'tool-chevron']) { const span = document.createElement('span'); span.className = cls; summary.append(span); }
-        detail.append(summary, document.createElement('pre')); stream.append(detail);
+        detail.append(summary, document.createElement('pre')); appendToolCard(detail);
         detail.addEventListener('toggle', () => { if (followLatest) scrollLatest(); });
       }
       const failed = item.success === false || ['failed', 'declined', 'error'].includes(item.status) || (item.exitCode != null && item.exitCode !== 0);
@@ -215,6 +270,7 @@
       detail.querySelector('.tool-chevron').textContent = '›';
       // No raw transfer payloads in the visible transcript.
       detail.lastChild.textContent = item.type === 'commandExecution' ? [item.command, item.aggregatedOutput].filter(Boolean).join('\n\n') : JSON.stringify(item, null, 2);
+      updateActionStack(detail);
       scrollLatest();
     }
   }
