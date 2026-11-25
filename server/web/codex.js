@@ -274,7 +274,7 @@
       scrollLatest();
     }
   }
-  let threadSort = 'updatedAt', metadataRun = 0;
+  let threadSort = 'updatedAt', metadataRun = 0, threadSelection = 0;
   try { threadSort = localStorage.getItem('aict-thread-sort') === 'createdAt' ? 'createdAt' : 'updatedAt'; } catch (_) {}
   function mergeThreadMetadata(raw) {
     const entry = session?.threads.find(t => t.id === raw.id);
@@ -346,9 +346,9 @@
     if ($('session-dialog').open) renderThreadPicker();
   }
   async function openThread(id, shouldOpen = () => true) {
-    const owner = session;
+    const owner = session, connection = socket, selection = ++threadSelection;
     const result = await rpc('thread/read', {threadId: id, includeTurns: true});
-    if (session !== owner || !shouldOpen()) return;
+    if (session !== owner || socket !== connection || threadSelection !== selection || !shouldOpen()) return;
     mergeThreadMetadata(result.thread);
     thread = id; turn = session.active?.[id]; renderExecutionMode(); resetMessages(); AICTUsage.select(targetDevice, thread, rpc);
     for (const t of result.thread.turns || []) for (const item of t.items || []) renderItem(item);
@@ -375,9 +375,22 @@
     overlaySelection = {id};
     openOverlayThread();
   });
+  let creatingThread = false;
   async function newThread() {
-    const r = await rpc('thread/start', {model: $('model').value || undefined});
-    thread = r.thread.id; turn = null; renderExecutionMode(); session.threads.unshift({id: thread, title: '新对话', createdAt:r.thread.createdAt,updatedAt:r.thread.updatedAt}); mergeThreadMetadata(r.thread);
+    if (creatingThread || submitting) return;
+    const owner = session, connection = socket, selection = ++threadSelection;
+    creatingThread = true;
+    let r;
+    try {
+      r = await rpc('thread/start', {model: $('model').value || undefined});
+    } finally {
+      creatingThread = false;
+    }
+    if (session !== owner || socket !== connection) return;
+    session.threads.unshift({id: r.thread.id, title: '新对话', createdAt:r.thread.createdAt,updatedAt:r.thread.updatedAt});
+    mergeThreadMetadata(r.thread);
+    if (threadSelection !== selection) { threadOptions(); return; }
+    thread = r.thread.id; turn = null; renderExecutionMode();
     AICTUsage.select(targetDevice, thread, rpc);
     resetMessages(); welcome(); threadOptions(); status('新对话 · 同一个设备工作空间');
   }
@@ -688,17 +701,26 @@
           renderExecutionMode();
           session.threads = session.threads.map(t=>({...t,title:t.title || '未命名会话'})); AICTUsage.select(targetDevice, null, rpc); requestQueue = session.requests || []; showRequest();
           $('project-info').textContent = '设备工作空间\n' + session.projectId + '\n所有对话共用此目录';
+          const selection = threadSelection;
+          threadOptions();
+          status(turn ? 'Codex 正在处理你的请求' : '已连接 · 设备工作空间');
           try {
             await rpc('device/context', {viewport: {width: innerWidth, height: innerHeight}, userAgent: navigator.userAgent, language: navigator.language, pixelRatio: devicePixelRatio});
-            if (overlaySelection) await openOverlayThread();
-            else if (session.threads.length) await openThread(thread && session.threads.some(t => t.id === thread) ? thread : session.threads[0].id);
-            else await newThread();
-            AICTUsage.refresh();
+            if (connection !== socket) return;
+            if (threadSelection === selection) {
+              if (overlaySelection) await openOverlayThread();
+              else if (session.threads.length) await openThread(thread && session.threads.some(t => t.id === thread) ? thread : session.threads[0].id);
+              else await newThread();
+            }
+          } catch (e) { if (connection === socket && threadSelection <= selection + 1) fail(e); }
+          if (connection !== socket) return;
+          AICTUsage.refresh();
+          try {
             const models = await rpc('model/list');
+            if (connection !== socket) return;
             $('model').length = 1;
             for (const m of models.data || []) $('model').add(new Option(m.displayName || m.model, m.model));
-            status(turn ? 'Codex 正在处理你的请求' : '已连接 · 设备工作空间');
-          } catch (e) { fail(e); }
+          } catch (_) { /* The default model remains available. */ }
         } else if (msg.event) event(msg.event);
       };
       socket.onclose = () => { if (connection !== socket) return; turn = null; activityKnown = false; requestQueue = []; showRequest(); if ($('session-dialog').open) renderThreadPicker(); AICTUsage.disconnect(); for (const p of pending.values()) { clearTimeout(p.timer); p.reject(Error('连接断开')); } pending.clear(); AICTProgress.finish('连接已断开'); scheduleReconnect(); };
@@ -709,7 +731,17 @@
   window.addEventListener('pageshow', () => { pageClosing = false; if (!socket || socket.readyState > WebSocket.OPEN) connect(); });
   window.addEventListener('online', () => { if (!socket || socket.readyState > WebSocket.OPEN) connect(); });
   $('composer').onsubmit = async e => {
-    e.preventDefault(); const text = $('prompt').value.trim(); if ((!text && !selectedFiles().length) || !thread || submitting || !session || !socket || socket.readyState !== WebSocket.OPEN) return;
+    e.preventDefault();
+    const text = $('prompt').value.trim();
+    if ((!text && !selectedFiles().length) || submitting) return;
+    if (!activityKnown || socket?.readyState !== WebSocket.OPEN) {
+      status('连接尚未就绪，请稍后重试', 'connecting');
+      return;
+    }
+    if (!thread || creatingThread) {
+      status('正在打开对话，请稍后发送', 'ready');
+      return;
+    }
     submitting = true; $('target-device').disabled = true; scrollLatest(true);
     $('send').disabled = true;
     try {
