@@ -10,6 +10,7 @@ import zipfile
 from pathlib import Path
 
 from aiohttp import web
+from apk_delta import APPLY_DELTA, MAX_APK_BYTES
 from file_transfer import PHONE_HASH_SCRIPT
 
 LOG = logging.getLogger('aict.updates')
@@ -116,6 +117,42 @@ class DeviceUpdates:
             raise RuntimeError(str(result.get('error', 'Native update operation failed')))
         return result['result']
 
+    async def transfer(self, device, source, destination):
+        token = secrets.token_urlsafe(32)
+        self.tokens = {key: entry for key, entry in self.tokens.items() if entry['expires'] > time.time()}
+        self.tokens[token] = {'apk': source, 'expires': time.time() + 1800}
+        try:
+            await self.call(device, 'download.start', {
+                'url': f'http://127.0.0.1:{self.gateway.config["http_port"]}/device-updates/{token}.apk',
+                'path': destination}, timeout=600)
+        finally:
+            self.tokens.pop(token, None)
+
+    async def download_update(self, device, release, installed, destination):
+        desired = release['sha256']
+        delta = release.get('delta')
+        if delta and delta['fromSha256'] == installed and 0 < delta['targetBytes'] <= MAX_APK_BYTES:
+            patch_path = destination + '.delta'
+            self.record(device, downloadMode='delta')
+            try:
+                await self.transfer(device, Path(delta['path']), patch_path)
+                verified = await self.call(device, 'script.execute', {
+                    'source': APPLY_DELTA, 'args': {'patch': patch_path, 'path': destination,
+                        'targetBytes': delta['targetBytes'], 'sha256': desired}}, timeout=120)
+                if verified['sha256'] == desired:
+                    return
+            except ConnectionError:
+                raise
+            except Exception as exc:
+                LOG.info('APK delta unavailable for %s (%s); using full APK', device, type(exc).__name__)
+
+        self.record(device, downloadMode='full')
+        await self.transfer(device, Path(release['apk']), destination)
+        verified = await self.call(device, 'script.execute', {
+            'source': PHONE_HASH_SCRIPT, 'args': {'path': destination, 'maxBytes': MAX_APK_BYTES}})
+        if verified['sha256'] != desired:
+            raise ValueError('Downloaded APK hash mismatch; installer was not opened')
+
     async def check(self, device):
         try:
             connection = self.gateway.devices[device]
@@ -136,7 +173,7 @@ class DeviceUpdates:
                     raise ValueError('Invalid release digest')
                 self.validated[credential] = stamp
             installed = await self.call(device, 'script.execute', {
-                'source': INSTALLED_HASH, 'args': {'maxBytes': 512 * 1024 * 1024}})
+                'source': INSTALLED_HASH, 'args': {'maxBytes': MAX_APK_BYTES}})
             desired = release['sha256']
             self.record(device, credentialId=credential, release=release['version'],
                         desiredSha256=desired, installedSha256=installed['sha256'],
@@ -155,19 +192,7 @@ class DeviceUpdates:
             self.record(device, status='downloading', attemptAt=time.time(), attemptSha256=desired, error=None)
             caps = await self.call(device, 'capabilities', {})
             destination = caps['paths']['downloads'] + '/AIct-update-' + desired[:12] + '.apk'
-            token = secrets.token_urlsafe(32)
-            self.tokens = {k: v for k, v in self.tokens.items() if v['expires'] > time.time()}
-            self.tokens[token] = {'apk': apk, 'expires': time.time() + 1800}
-            try:
-                await self.call(device, 'download.start', {
-                    'url': f'http://127.0.0.1:{self.gateway.config["http_port"]}/device-updates/{token}.apk',
-                    'path': destination}, timeout=600)
-            finally:
-                self.tokens.pop(token, None)
-            verified = await self.call(device, 'script.execute', {
-                'source': PHONE_HASH_SCRIPT, 'args': {'path': destination, 'maxBytes': 512 * 1024 * 1024}})
-            if verified['sha256'] != desired:
-                raise ValueError('Downloaded APK hash mismatch; installer was not opened')
+            await self.download_update(device, release, installed['sha256'], destination)
             await self.call(device, 'script.execute', {
                 'source': 'app.viewFile(args.path);({installerRequested:true});', 'args': {'path': destination}})
             self.record(device, status='awaiting_install', phonePath=destination,

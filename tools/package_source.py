@@ -8,6 +8,7 @@ files.append(root / 'client/assets/webview-copy-context.js')
 for directory in ('client/src', 'server/web', 'tools'):
     files.extend(p for p in (root / directory).rglob('*') if p.is_file() and '__pycache__' not in p.parts)
 files.extend((root / 'server').glob('*.py'))
+files.append(root / 'server/apply_apk_delta.js')
 files.append(root / 'server/requirements.txt')
 with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
     for path in sorted(set(files)):

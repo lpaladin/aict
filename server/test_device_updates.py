@@ -79,6 +79,39 @@ class UpdateTests(unittest.IsolatedAsyncioTestCase):
         await reloaded.check('phone')
         self.assertEqual(reloaded.state['phone']['status'], 'installed')
 
+    async def test_only_adjacent_apk_is_eligible_for_delta(self):
+        release = self.releases['alice']
+        desired = release['sha256']
+        release['delta'] = {'fromSha256': 'previous', 'path': 'adjacent.gz', 'targetBytes': 1024}
+        save(self.updates.manifest, {'releases': self.releases})
+        for installed in ('previous', 'older'):
+            with self.subTest(installed=installed):
+                self.updates.state.clear()
+                self.updates.call = AsyncMock(side_effect=[{'sha256': installed},
+                    {'paths': {'downloads': '/downloads'}}, {}, {'sha256': desired}, {}])
+                await self.updates.check('phone')
+                row = self.updates.state['phone']
+                self.assertEqual(row['status'], 'awaiting_install')
+                self.assertEqual(row['downloadMode'], 'delta' if installed == 'previous' else 'full')
+                download = self.updates.call.await_args_list[2].args[2]['path']
+                self.assertEqual(download.endswith('.delta'), installed == 'previous')
+
+    async def test_corrupt_delta_falls_back_to_verified_full_apk(self):
+        release = self.releases['alice']
+        desired = release['sha256']
+        release['delta'] = {'fromSha256': 'previous', 'path': 'adjacent.gz', 'targetBytes': 1024}
+        save(self.updates.manifest, {'releases': self.releases})
+        self.updates.call = AsyncMock(side_effect=[{'sha256': 'previous'},
+            {'paths': {'downloads': '/downloads'}}, {}, {'sha256': 'wrong'}, {}, {'sha256': desired}, {}])
+        await self.updates.check('phone')
+        row = self.updates.state['phone']
+        self.assertEqual(row['status'], 'awaiting_install')
+        self.assertEqual(row['downloadMode'], 'full')
+        calls = self.updates.call.await_args_list
+        self.assertTrue(calls[2].args[2]['path'].endswith('.delta'))
+        self.assertTrue(calls[4].args[2]['path'].endswith('.apk'))
+        self.assertIn('app.viewFile', calls[-1].args[2]['source'])
+
     async def test_corrupt_download_does_not_open_installer(self):
         self.updates.call = AsyncMock(side_effect=[{'sha256': 'old'}, {'paths': {'downloads': '/downloads'}},
                                                    {}, {'sha256': 'corrupt'}])
