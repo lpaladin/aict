@@ -64,11 +64,11 @@ public final class MainActivity extends Activity {
         status = new TextView(this);
         topBar = new LinearLayout(this); topBar.setGravity(Gravity.CENTER_VERTICAL); topBar.setPadding(dp(8),0,dp(4),0);
         homeChip = new LinearLayout(this); homeChip.setGravity(Gravity.CENTER); homeChip.setPadding(dp(10),0,dp(10),0);
-        homeChip.setOnClickListener(v -> select(home)); homeChip.setContentDescription("Codex，固定标签页");
+        homeChip.setOnClickListener(v -> openCodex()); homeChip.setContentDescription("Codex，固定标签页");
         homeLabel = text("Codex",14); homeLabel.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL)); homeChip.addView(homeLabel);
         connectionDot = new View(this); LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(6),dp(6)); dotParams.leftMargin=dp(7); homeChip.addView(connectionDot,dotParams);
         // The visual pill is 34dp tall; its parent retains a 48dp touch target.
-        FrameLayout homeTarget = new FrameLayout(this); homeTarget.setOnClickListener(v -> select(home));
+        FrameLayout homeTarget = new FrameLayout(this); homeTarget.setOnClickListener(v -> openCodex());
         homeTarget.setContentDescription("切换到 Codex，长按查看连接状态");
         FrameLayout.LayoutParams chipParams = new FrameLayout.LayoutParams(-1,dp(34),Gravity.CENTER);
         homeTarget.addView(homeChip,chipParams); topBar.addView(homeTarget,new LinearLayout.LayoutParams(dp(86),dp(48)));
@@ -293,6 +293,39 @@ public final class MainActivity extends Activity {
         if(web==window) select(windows.get(Math.max(0,index-1))); else updateTabs();
     }
     private void addTab(WebView tab) { windows.add(tab); pages.addView(tab,new FrameLayout.LayoutParams(-1,-1)); select(tab); }
+    private void openCodex() {
+        select(home);
+        JSONObject config = ConnectionService.config;
+        if (!entryLoaded || config == null) return;
+        String entryUrl = config.optString("entryUrl");
+        if (!entryUrl.isEmpty() && !isCodexPage(home.getUrl(), entryUrl)) home.loadUrl(entryUrl);
+    }
+
+    static boolean isCodexPage(String currentUrl, String entryUrl) {
+        if (currentUrl == null) return false;
+        try {
+            URI current = URI.create(currentUrl);
+            URI entry = URI.create(entryUrl);
+            String scheme = entry.getScheme();
+            String host = entry.getHost();
+            if (scheme == null || host == null || !scheme.equalsIgnoreCase(current.getScheme()) ||
+                !host.equalsIgnoreCase(current.getHost())) return false;
+            int defaultPort = "https".equalsIgnoreCase(scheme) ? 443 : 80;
+            int currentPort = current.getPort() == -1 ? defaultPort : current.getPort();
+            int entryPort = entry.getPort() == -1 ? defaultPort : entry.getPort();
+            if (currentPort != entryPort) return false;
+            String currentPath = current.getRawPath();
+            String entryPath = entry.getRawPath();
+            if (currentPath.isEmpty()) currentPath = "/";
+            if (entryPath.isEmpty()) entryPath = "/";
+            return currentPath.equals(entryPath) ||
+                ("/".equals(entryPath) && "/codex".equals(currentPath)) ||
+                ("/codex".equals(entryPath) && "/".equals(currentPath));
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
     private void select(WebView tab) {
         if(tab==null || !windows.contains(tab)) return; web=tab;
         for(WebView w:windows) w.setVisibility(w==tab?View.VISIBLE:View.GONE);
