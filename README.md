@@ -35,6 +35,10 @@ WebView、SSH、AutoJs6/Rhino、Java 互操作与 Android 系统适配。
 测试页面源文件：`server/web/index.html`。修改后刷新手机网页即可生效，
 不必重新构建 APK。页面 SDK 由客户端在文档启动时注入；服务器也提供 `/phone.js`。
 
+客户端可在左下角设置 →「SSH 连接端口」中保存 `1–65535` 的端口号；保存后自动重连，
+「恢复内置端口」会移除覆盖值。现有 APK 配置的默认端口仍为 `19198`；NAS
+`192.168.31.28` 部署使用 `19199`。服务器地址、账号和主机公钥校验保持 APK 内置配置。
+
 ```javascript
 await phone.execute('toast(args.text); ({ok: true})', {text: '来自服务端网页'});
 await phone.execute('new java.io.File(context.getFilesDir(), "demo.txt").getAbsolutePath()');
@@ -131,3 +135,11 @@ CONNECT、服务端主动 RPC，以及错误凭据/主机密钥拒绝。RPC 的�
 - 全部网页可信并不意味着 WebView 支持全部桌面浏览器 API。
 
 详见 `THIRD_PARTY_NOTICES.md` 的运行时来源、许可证及可取得的上游源码。
+
+## Additional user APKs
+
+`python tools/provision_user.py user2` creates an independent RSA SSH identity and embedded config in ignored `.secrets/users/`, without changing the default client config. The server accepts each additional username only with its matching `.secrets/users/<username>.pub`; the original demo identity is retained. Additional public keys are read at authentication time; a server already running older source needs one restart to load this authentication implementation. These are trusted service accounts sharing the existing device/service access scope, not isolated tenants.
+
+Build with `powershell -NoProfile -ExecutionPolicy Bypass -File tools/build.ps1 -ConnectionConfig .secrets/users/user2.json -OutputApk dist/aict-user2-0.4.1.apk`. Verify with `python tools/verify_apk.py dist/aict-user2-0.4.1.apk`. Keep private credentials and APKs out of source archives. User builds retain the AIct label, package, and signing identity; they are intended for separate users' phones and do not install side by side on one phone.
+
+2026-11-18: user2 0.4.1 built and verified with v2/v3 signatures, zipalign, 15 runtime signatures, correct embedded username/credential ID, independent key and server public-key match. Actual JSch SSH tests passed against localhost and the APK's public endpoint, including host verification, HTTP proxy and control channel registration; original demo authentication also passed. Gateway suite: 10 tests passed. User2 phone installation and UI/permission flows remain untested.

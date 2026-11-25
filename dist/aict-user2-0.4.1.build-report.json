@@ -1,0 +1,13 @@
+{
+  "apk": "aict-user2-0.4.1.apk",
+  "bytes": 54760653,
+  "sha256": "040cb9462a76eb0732d9b32d60a366b23a0d1f58e76cab19a06a074d169ab79f",
+  "dex_count": 9,
+  "runtime_signatures_checked": 15,
+  "endpoint": "zhyzbklqx.gicp.net:19198",
+  "embedded_credential": true,
+  "host_key_pinning": true,
+  "evidence": "static APK inspection; v2/v3 signature and zipalign checks passed; JSch localhost and public endpoint authentication, HTTP proxy, and control registration passed; user2 phone installation not tested",
+  "username": "user2",
+  "credentialId": "aict-user2-001"
+}
