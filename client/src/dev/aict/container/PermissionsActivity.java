@@ -31,6 +31,17 @@ public final class PermissionsActivity extends Activity {
         super.onCreate(state);
         ScrollView scroll = new ScrollView(this); list = new LinearLayout(this); list.setOrientation(LinearLayout.VERTICAL); list.setPadding(28, 24, 28, 24); scroll.addView(list); setContentView(scroll);
         message = new TextView(this); message.setText("AIct 权限中心\n\n网页和服务端脚本可使用本应用已获得的权限。系统授权可随时撤销。无障碍用于界面控制；AIct Vision 用于节点读取与截图。部分手机需先在应用信息中允许受限设置。\n"); list.addView(message);
+        Switch acceptControl = new Switch(this);
+        acceptControl.setText("允许其他设备控制本机");
+        acceptControl.setChecked(ConnectionService.acceptsRemoteControl(this));
+        acceptControl.setOnCheckedChangeListener((button, checked) ->
+            getSharedPreferences("aict", MODE_PRIVATE).edit()
+                .putBoolean(ConnectionService.ACCEPT_CONTROL, checked).apply());
+        list.addView(acceptControl);
+        TextView controlHint = new TextView(this);
+        controlHint.setText("开启后，本机才会出现在其他设备的控制目标列表中。关闭不影响在本机使用 AIct。\n");
+        list.addView(controlHint);
+        add("SSH 连接端口", this::editSshPort);
         add("逐项申请常用权限", () -> {
             queue.clear();
             Collections.addAll(queue, "android.permission.CAMERA", "android.permission.RECORD_AUDIO", "android.permission.ACCESS_COARSE_LOCATION", "android.permission.ACCESS_FINE_LOCATION", "android.permission.READ_CONTACTS", "android.permission.WRITE_CONTACTS", "android.permission.READ_CALENDAR", "android.permission.WRITE_CALENDAR", "android.permission.READ_PHONE_STATE", "android.permission.CALL_PHONE");
@@ -56,6 +67,33 @@ public final class PermissionsActivity extends Activity {
         }
     }
     private void add(String title, Runnable action) { Button b = new Button(this); b.setText(title); b.setOnClickListener(v -> { try { action.run(); } catch (Exception e) { message.setText(e.toString()); } }); list.addView(b); }
+    private void editSshPort() {
+        EditText input = new EditText(this);
+        input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        input.setSingleLine(true);
+        try { input.setText(String.valueOf(ConnectionService.getSshPort(this))); }
+        catch (Exception e) { message.setText(e.toString()); return; }
+        input.selectAll();
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("SSH 连接端口")
+            .setMessage("输入服务器端口（1–65535）。保存后自动重新连接。NAS 使用 19199。")
+            .setView(input).setNegativeButton("取消", null)
+            .setNeutralButton("恢复内置端口", (d, which) -> {
+                getSharedPreferences("aict", MODE_PRIVATE).edit().remove(ConnectionService.SSH_PORT).apply();
+                startForegroundService(new Intent(this, ConnectionService.class));
+                Toast.makeText(this, "已恢复内置端口，正在重新连接", Toast.LENGTH_SHORT).show();
+            }).setPositiveButton("保存并重连", null).create();
+        dialog.setOnShowListener(d -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
+            int port;
+            try { port = Integer.parseInt(input.getText().toString().trim()); }
+            catch (NumberFormatException e) { input.setError("请输入 1–65535 的端口号"); return; }
+            if (port < 1 || port > 65535) { input.setError("请输入 1–65535 的端口号"); return; }
+            getSharedPreferences("aict", MODE_PRIVATE).edit().putInt(ConnectionService.SSH_PORT, port).apply();
+            startForegroundService(new Intent(this, ConnectionService.class));
+            Toast.makeText(this, "端口已保存，正在重新连接", Toast.LENGTH_SHORT).show();
+            dialog.dismiss();
+        }));
+        dialog.show();
+    }
     private void open(Intent intent) { startActivity(intent); }
     private void nextPermission() {
         while (!queue.isEmpty()) {

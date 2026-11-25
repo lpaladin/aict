@@ -1,0 +1,11 @@
+{
+  "apk": "aict-user2-0.4.1-port-settings.apk",
+  "bytes": 54764749,
+  "sha256": "e08968833b09851e3489ef7e33e497e6a379130c1ede574e7b9be81bf412ac1f",
+  "dex_count": 9,
+  "runtime_signatures_checked": 15,
+  "endpoint": "zhyzbklqx.gicp.net:19198",
+  "embedded_credential": true,
+  "host_key_pinning": true,
+  "evidence": "static APK inspection only; device installation and runtime are separate checks"
+}

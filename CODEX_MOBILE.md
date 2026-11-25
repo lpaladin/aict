@@ -72,6 +72,11 @@ artifact 路由仅提供该 project 的 artifacts 子目录文件，不提供任
 4. 手机 SSH 在线后进入页面，可新建/切换对话、选择模型、附加图片、发送/追加消息、停止、审批。
 5. “重连”恢复历史与待处理审批；服务端后台任务不随网页暂时断开而停止。
 
+服务重启请使用 `phone_call` 的 `service.restart` 方法（仅在用户要求或同意时），不要让当前Agent的Shell先杀网关再启动。
+网关会启动独立worker，延迟4秒后核对PID/命令行、重启服务并检查 `/health`。
+返回的是“已安排”及operationId，不代表已经成功；结果在 `server/run/restart-<operationId>.json`。
+网页断线后按1秒至15秒退避自动重连，恢复当前对话；不会自动重发消息或重复执行任务。
+
 Windows 上请从正常用户 PowerShell 启动服务。受限执行环境可能允许 HTTP/SSH，但拒绝 Python 创建 app-server 命名管道，表现为 WinError 5；需要更换服务启动环境，不是修改 SSH 配置或手机权限。
 
 接入使用真正的 Codex harness，具备其本地文件、shell、已配置 MCP/skills 等能力。
@@ -94,3 +99,26 @@ node --check server/web/codex.js
 基础测试覆盖设备目录稳定性、对话归属、绑定手机路由、原生失败、artifact 路径越界、客户端覆盖 cwd 拒绝。
 可选真实测试覆盖 app-server 初始化、新建对话、模型读取、一次推理和动态工具调用、进程重启后的对话恢复。
 模拟设备测试通过不能证明真机文件、授权、截图或 UI 操作已成功。
+
+
+手机 Codex 顶部的“操控手机”可选择本机或同一 AIct 服务上的在线手机，显示机型及完整设备 ID；点击刷新可更新列表。选择会保存在当前浏览器，并切换到目标手机独立的对话、文件和操作空间。切换不会停止原手机上已开始的任务，返回原手机可继续查看。目标离线会保留选择并显示离线，不自动回退到本机。上传和提交期间暂时禁用切换，避免附件与指令发往不同手机。进度悬浮窗仍显示在当前打开 Codex 的本机。
+
+列表沿用现有 `/api/devices` 的服务可见范围；当前设备注册只有机型与安装 ID，没有机主姓名。此选择器不新增机主身份或授权关系。
+
+## Windows 后台常驻
+
+运行 `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\install-resident-server.ps1` 安装或更新当前用户的 `AIct Resident Server` 计划任务并立即启动。任务在该用户登录时启动，以普通用户权限、隐藏窗口运行，不需要保存 Windows 密码。锁屏后仍可运行；退出登录后停止，电脑睡眠期间无法提供服务。它不是开机未登录即可运行的 Windows SCM 服务。
+
+守护脚本 `tools/resident-server.ps1` 每 10 秒检查网关进程；退出后通过 `tools/start-server.ps1` 重新启动。守护任务自身失败后每分钟重试，最多 999 次。允许电池供电运行，无任务运行时长限制。进程仍存活但业务卡死的情况不在当前自动恢复范围。启动脚本使用独占锁避免守护和手动重启同时创建实例；现有在线服务可直接接管。
+
+查看状态：`Get-ScheduledTask -TaskName 'AIct Resident Server'`。诊断日志在 `server/run/resident.log`、`server/run/stdout.log`、`server/run/stderr.log`。重新运行安装脚本可更新配置。
+
+停止常驻并停止网关时，先执行 `Disable-ScheduledTask -TaskName 'AIct Resident Server'` 和 `Stop-ScheduledTask -TaskName 'AIct Resident Server'`，再停止经命令行确认属于本项目的 `server/run/server.pid` 进程。仅停止网关会触发自动拉起。卸载自动启动可执行 `Unregister-ScheduledTask -TaskName 'AIct Resident Server' -Confirm:$false`，这不删除数据，也不自动停止已经运行的网关。
+
+2026-11-18 本机验证：任务处于 Running，交互用户 hy、Limited 权限，登录触发、无限运行时长和电池设置读回成功；停止已核验的网关 PID 1200 后，守护自动拉起 PID 29552，`/health` 返回正常。随后检测到 1 台手机，计划任务环境下成功初始化 Codex app-server，`model/list` 返回 8 个模型。此检查未发送推理请求，尚未通过实际退出登录/重新登录验证登录触发。
+
+### 新用户空对话历史兼容（2026-11-18）
+
+实际在线 user2 的空对话在 `thread/read(includeTurns=true)` 返回 `-32601: list_turns is not supported yet`；仅加载元数据正常，元数据显示默认 historyMode 为 paginated。创建线程现在显式使用 `historyMode: legacy`，避免进入当前安装版本未实现的分页历史路径。首条用户 turn 被接受前使用 `includeTurns:false`，避免 legacy 空线程的 `not materialized yet` 错误；已有消息的线程继续完整读取历史，错误不会被伪装为空记录。
+
+验证：13 项测试全部通过（启用真实 Codex app-server 集成），包括空对话读取、首轮工具调用、进程关闭后历史恢复。部署重启后，在线 user2 的 legacy 空对话返回 0 turns、原用户已有对话返回 1 turn，均无错误。修复在服务端，无需重发 APK。未落盘的空对话按原有启动策略不跨服务重启保留；已落盘对话不改动。

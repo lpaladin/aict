@@ -14,8 +14,8 @@ public final class SSHProbe {
         String publicKey = new String(Files.readAllBytes(Paths.get(".secrets/host.pub")), StandardCharsets.UTF_8).trim();
         String knownHosts = "[" + host + "]:" + port + " " + publicKey + "\n";
         jsch.setKnownHosts(new ByteArrayInputStream(knownHosts.getBytes(StandardCharsets.UTF_8)));
-        jsch.addIdentity(".secrets/client");
-        Session session = jsch.getSession("aict_demo", host, port);
+        jsch.addIdentity(args.length > 3 ? args[3] : ".secrets/client");
+        Session session = jsch.getSession(args.length > 2 ? args[2] : "aict_demo", host, port);
         session.setConfig("StrictHostKeyChecking", "yes");
         try {
             session.connect(15000);

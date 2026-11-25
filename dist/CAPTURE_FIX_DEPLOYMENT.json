@@ -1,0 +1,24 @@
+{
+  "date": "2026-11-19",
+  "devices": [
+    {
+      "model": "2512BPNDAC",
+      "deviceId": "a5f3feb4-5270-4b42-9d74-80742fa35201",
+      "status": "installed_hash_verified",
+      "apk": "dist/aict-demo-0.4.1-capture-fix.apk",
+      "sha256": "d6ec14365f32b1b7578a38d5275baeaed837b668d2f9fce3279b3c89f537db48",
+      "screenCapture": {
+        "ok": true,
+        "width": 1200,
+        "height": 2608
+      }
+    },
+    {
+      "model": "ALN-AL00",
+      "deviceId": "16576d30-f57c-4e88-9c5b-80b6199ef254",
+      "status": "offline_pending_delivery",
+      "apk": "dist/aict-user2-0.4.1-capture-fix.apk",
+      "sha256": "706da2e6208fd2dd13e8230870a22f84dbb2299a65e63adbfac03fd02d9aa0dc"
+    }
+  ]
+}

@@ -6,11 +6,15 @@ import json
 import os
 import shutil
 import uuid
+import time
 from pathlib import Path
 from urllib.parse import quote
 
 from aiohttp import web, WSMsgType
 from file_transfer import transfer, project_path
+from service_lifecycle import schedule_restart
+from thread_titles import ThreadTitleService
+from session_activity import last_activity
 
 ROOT = Path(__file__).resolve().parents[1]
 PHONE_TOOL = {
@@ -34,6 +38,9 @@ viewport=device-width, initial-scale=1；触摸目标 >=44px；窄屏可用；�
 
 工具只指向当前手机。每次操作前按需调用 capabilities，权限和在线状态会变化。
 方法及 params：
+- service.restart {}：仅当用户要求/同意重启AICT服务时使用。通过服务端独立worker延迟重启，返回operationId。
+  不要在Shell中Stop-Process当前网关后再start-server：停止网关会杀死正在执行命令的会话，使启动语句没机会执行。
+  重启会中断当前turn；历史保留，网页可自动重连。启动成功须以/health与restart状态文件为准，不能提前声称已重启成功。
 - transfer.toPhone {projectPath:'artifacts/report.pdf',phonePath?:'/手机路径/report.pdf',overwrite?:false}：电脑 project → 手机。
 - transfer.fromPhone {phonePath:'/手机路径/photo.jpg' 或 'content://...',projectPath:'imports/photo.jpg',overwrite?:false}：手机 → 电脑 project。
   两者是服务端传输方法，直接通过现有 phone_call 调用。服务端自动分块、Base64编码和 SHA-256 校验。
@@ -53,6 +60,12 @@ viewport=device-width, initial-scale=1；触摸目标 >=44px；窄屏可用；�
 - file.list {path} 或 {treeUri,documentId?}；SAF URI 需要用户授权。
 - accessibility.snapshot {}：读取 AICT Vision 节点树。
 - screen.capture {}：截图；要求 AICT Vision 启用，受保护窗口可能无法读取。
+  读取页面时同时检查节点 text 与 contentDescription/desc，不能只读 text；金额、卡片和图表标签常在 desc 中。
+  文本为空只说明当前提取方法没拿到内容，不能推断资产为零、页面空白或安全限制。
+  截图若返回 device disconnected，这是通信故障，不是“禁止截图”的证据；检查连接恢复后再尝试，
+  只有明确的安全窗口错误才可判断受保护。每次操作后核对实际页面；调用成功不等于点击生效。
+  未读取到的金额、分类和点击结果必须明确标为未确认，禁止按常识补全或宣称看到了页面。
+
 - permissions.open {}：在手机打开授权页面；授权由用户完成。
 - permissions.status {}、permissions.request {permissions:[Android 权限名]}：读取/申请运行时权限。
 - ui.action {type:'global',action:'back'|'home'|'recents'|'notifications'|'quickSettings'}。
@@ -93,8 +106,11 @@ class DeviceProject:
         self.clients = set()
         self.lock = asyncio.Lock()
         self.tasks = set()
+        self.transfers = {}
         self.active = {}
+        self.turn_progress = {}
         self.profile = {}
+        self.titles = ThreadTitleService(self)
 
     def save(self):
         temp = self.state_path.with_suffix('.tmp')
@@ -109,6 +125,7 @@ class DeviceProject:
                 'Read DEVICE.json for latest phone capabilities and browser viewport. '
                 'File transfer uses phone_call methods transfer.toPhone/transfer.fromPhone with projectPath and phonePath; '
                 'server moves bytes directly. Never stream file chunks or base64 through model context. '
+                'When the user requests an AICT service restart, use phone_call service.restart, not Stop-Process in the current shell. '
                 f'Artifact URL prefix: /artifacts/{self.key}/. Use phone_call capabilities for current device state.')
 
     async def start(self):
@@ -185,10 +202,40 @@ class DeviceProject:
                             future.set_result(msg.get('result'))
                     continue
                 params = msg.get('params', {})
+                if self.titles.consume(msg):
+                    continue
+                if msg.get('method') == 'thread/name/updated':
+                    entry = next((t for t in self.state['threads'] if t['id'] == params.get('threadId')), None)
+                    if entry:
+                        entry.update({'name': params['threadName'], 'title': params['threadName']})
+                        self.save()
+                if msg.get('method') in {'turn/started', 'turn/completed'}:
+                    entry = next((t for t in self.state['threads'] if t['id'] == params.get('threadId')), None)
+                    if entry:
+                        entry['lastActivityAt'] = int(time.time())
+                        self.save()
                 if msg.get('method') == 'turn/started':
                     self.active[params['threadId']] = params['turn']['id']
+                    self.turn_progress[params['turn']['id']] = {'threadId': params['threadId'],
+                        'status': 'running', 'step': '正在处理请求…'}
+                    if len(self.turn_progress) > 200:
+                        oldest = next((key for key, value in self.turn_progress.items() if value['status'] != 'running'), None)
+                        if oldest:
+                            self.turn_progress.pop(oldest)
+                if msg.get('method') == 'item/started':
+                    current = self.turn_progress.get(self.active.get(params.get('threadId')))
+                    if current:
+                        item = params.get('item', {})
+                        names = {'commandExecution': '执行命令', 'fileChange': '修改文件',
+                                 'dynamicToolCall': '调用工具', 'mcpToolCall': '调用服务',
+                                 'reasoning': '思考中', 'agentMessage': '整理回复', 'webSearch': '搜索网页'}
+                        current['step'] = names.get(item.get('type'), '正在处理请求…')
                 if msg.get('method') == 'turn/completed':
+                    self.cancel_transfers(params['threadId'], params['turn']['id'])
                     self.active.pop(params['threadId'], None)
+                    completed = params['turn']
+                    self.turn_progress[completed['id']] = {'threadId': params['threadId'],
+                        'status': completed['status'], 'step': '已完成' if completed['status'] == 'completed' else '任务结束 · ' + completed['status']}
                 if 'id' in msg:
                     if msg['method'] == 'item/tool/call':
                         self.spawn(self.phone_tool(msg))
@@ -201,6 +248,7 @@ class DeviceProject:
             for future in list(self.pending.values()):
                 if not future.done():
                     future.set_exception(ConnectionError('Codex app-server disconnected'))
+            self.titles.disconnect()
             self.active.clear()
             self.requests.clear()
             await self.broadcast({'method': 'aict/disconnected', 'params': {}})
@@ -213,8 +261,20 @@ class DeviceProject:
             args = params['arguments']
             if isinstance(args, str):
                 args = json.loads(args)
-            if args.get('method', '').startswith('transfer.'):
-                result = {'ok': True, 'result': await transfer(self, args['method'].split('.', 1)[1], args.get('params', {}), params.get('threadId'))}
+            if args.get('method') == 'service.restart':
+                result = {'ok': True, 'result': schedule_restart()}
+            elif args.get('method', '').startswith('transfer.'):
+                owner = (params.get('threadId'), params.get('turnId') or self.active.get(params.get('threadId')))
+                task = asyncio.create_task(transfer(self, args['method'].split('.', 1)[1], args.get('params', {}), owner[0]))
+                self.transfers[task] = owner
+                try:
+                    result = {'ok': True, 'result': await task}
+                except asyncio.CancelledError:
+                    if asyncio.current_task().cancelling():
+                        raise
+                    result = {'ok': False, 'error': 'File transfer cancelled', 'cancelled': True}
+                finally:
+                    self.transfers.pop(task, None)
             elif args.get('method') == 'file.read' and not args.get('params', {}).get('text'):
                 raise ValueError('Do not put binary chunks/base64 into model context. Use transfer.fromPhone with phonePath and projectPath; then inspect the local file only if needed.')
             else:
@@ -233,6 +293,12 @@ class DeviceProject:
         except Exception as exc:
             output = {'success': False, 'contentItems': [{'type': 'inputText', 'text': str(exc)}]}
         await self.write({'id': msg['id'], 'result': output})
+
+    def cancel_transfers(self, thread_id, turn_id):
+        # Scope cancellation to this device, conversation and turn.
+        for task, owner in list(self.transfers.items()):
+            if owner == (thread_id, turn_id) and not task.done():
+                task.cancel()
 
     def owns(self, thread):
         if thread not in {entry['id'] for entry in self.state['threads']}:
@@ -257,7 +323,9 @@ class DeviceProject:
                 'capabilities': capabilities}, ensure_ascii=False, indent=2), encoding='utf-8')
         if method == 'thread/start':
             options = {'cwd': str(self.cwd), 'developerInstructions': self.context(),
-                       'dynamicTools': [PHONE_TOOL], 'approvalPolicy': 'on-request', 'sandbox': 'workspace-write'}
+                       'dynamicTools': [PHONE_TOOL], 'approvalPolicy': 'on-request', 'sandbox': 'workspace-write',
+                       # This installed app-server cannot list turns for paginated threads yet.
+                       'historyMode': 'legacy'}
             if params.get('model'):
                 options['model'] = params['model']
             result = await self.rpc(method, options)
@@ -267,19 +335,47 @@ class DeviceProject:
             self.save()
             return result
         if method in {'thread/read', 'turn/start', 'turn/interrupt', 'turn/steer', 'thread/compact/start'}:
-            await self.resume(params['threadId'])
+            if method == 'thread/read' and not params.get('includeTurns', False):
+                # Metadata reads must not resume/load sessions or change their recency.
+                self.owns(params['threadId'])
+            else:
+                await self.resume(params['threadId'])
             # Client cannot override cwd, instructions, sandbox or execution configuration.
             allowed = {'thread/read': {'threadId', 'includeTurns'},
                        'turn/start': {'threadId', 'input', 'model', 'effort'},
                        'turn/interrupt': {'threadId', 'turnId'},
                        'turn/steer': {'threadId', 'input', 'expectedTurnId'},
                        'thread/compact/start': {'threadId'}}[method]
-            result = await self.rpc(method, {k: v for k, v in params.items() if k in allowed})
+            request = {k: v for k, v in params.items() if k in allowed}
+            if method == 'thread/read':
+                entry = next(t for t in self.state['threads'] if t['id'] == params['threadId'])
+                # No history is materialized before the first accepted user turn.
+                if not entry.get('persisted', True):
+                    request['includeTurns'] = False
+            if method == 'turn/interrupt':
+                self.cancel_transfers(params['threadId'], params['turnId'])
+            result = await self.rpc(method, request)
+            if method == 'thread/read':
+                entry = next(t for t in self.state['threads'] if t['id'] == params['threadId'])
+                raw = result['thread']
+                activity = last_activity(raw)
+                if activity:
+                    entry['lastActivityAt'] = max(activity, entry.get('lastActivityAt', 0))
+                if entry.get('lastActivityAt'):
+                    raw['updatedAt'] = entry['lastActivityAt']
+                for key in ('name', 'createdAt'):
+                    if key in raw: entry[key] = raw[key]
+                if raw.get('name'): entry['title'] = raw['name']
+                self.save()
+            if method in {'turn/start', 'turn/steer'}:
+                entry = next(t for t in self.state['threads'] if t['id'] == params['threadId'])
+                entry['lastActivityAt'] = int(time.time())
+                self.save()
             if method == 'turn/start':
                 entry = next(t for t in self.state['threads'] if t['id'] == params['threadId'])
                 entry['persisted'] = True
-                if entry['title'] == '新对话':
-                    entry['title'] = next((i['text'][:60] for i in params.get('input', []) if i.get('type') == 'text'), '对话')
+                if not entry.get('name'):
+                    self.spawn(self.titles.ensure(params['threadId'], params.get('input', [])))
                 self.save()
             return result
         if method in {'model/list', 'account/read', 'account/rateLimits/read', 'skills/list', 'mcpServerStatus/list'}:
@@ -313,6 +409,17 @@ class CodexMobile:
 
     async def script(self, request):
         return web.FileResponse(ROOT / 'server/web/codex.js')
+
+    async def progress(self, request):
+        project = self.projects.get(request.match_info['device'])
+        turn_id = request.match_info['turn']
+        progress = project.turn_progress.get(turn_id) if project else None
+        if not progress:
+            return web.json_response({'status': 'unknown'}, headers={'Cache-Control': 'no-store'})
+        value = dict(progress)
+        if value['status'] == 'running' and (not project.process or project.process.returncode is not None):
+            value.update(status='disconnected', step='Codex 进程已退出')
+        return web.json_response(dict(value, turnId=turn_id), headers={'Cache-Control': 'no-store'})
 
     async def upload(self, request):
         device = request.match_info['device']
@@ -410,6 +517,7 @@ class CodexMobile:
         app.router.add_get('/codex', self.index)
         app.router.add_get('/codex.js', self.script)
         app.router.add_get('/api/codex/{device}/ws', self.websocket)
+        app.router.add_get('/api/codex/{device}/progress/{turn}', self.progress)
         app.router.add_post('/api/codex/{device}/files', self.upload)
         app.router.add_get('/artifacts/{project}/{path:.*}', self.artifacts)
         app.router.add_get('/artifact-list/{project}', self.artifact_list)

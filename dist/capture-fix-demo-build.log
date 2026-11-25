@@ -1,0 +1,46 @@
+Prepared independent runtime overlay; credential contents not logged.
+����: [options] δ�� -source 8 һ������������·��
+ע: ĳЩ�����ļ�ʹ�û򸲸����ѹ�ʱ�� API��
+ע: �й���ϸ��Ϣ, ��ʹ�� -Xlint:deprecation ���±��롣
+1 ������
+I: Using Apktool 2.12.1 on template.apk with 8 threads
+I: Copying raw classes9.dex file...
+I: Checking whether resources have changed...
+I: Building resources with aapt2...
+I: Building apk file...
+I: Importing assets...
+I: Importing lib...
+I: Importing unknown files...
+I: Built apk into: .build\aict-unsigned.apk
+WARNING: A restricted method in java.lang.System has been called
+WARNING: java.lang.System::loadLibrary has been called by org.conscrypt.NativeLibraryUtil in an unnamed module (file:/D:/Projects/AIProjects/bettergpt/.checks/sdk/android-15/lib/apksigner.jar)
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+
+WARNING: A restricted method in java.lang.System has been called
+WARNING: java.lang.System::loadLibrary has been called by org.conscrypt.NativeLibraryUtil in an unnamed module (file:/D:/Projects/AIProjects/bettergpt/.checks/sdk/android-15/lib/apksigner.jar)
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+
+Verifies
+Verified using v1 scheme (JAR signing): false
+Verified using v2 scheme (APK Signature Scheme v2): true
+Verified using v3 scheme (APK Signature Scheme v3): true
+Verified using v3.1 scheme (APK Signature Scheme v3.1): false
+Verified using v4 scheme (APK Signature Scheme v4): false
+Verified for SourceStamp: false
+Number of signers: 1
+Signer #1 certificate DN: CN=AICT Local Distribution
+Signer #1 certificate SHA-256 digest: c73244d71159c216c33cf1874ef8545fe3aebbd0345e7043aa9a52b15521af37
+Signer #1 certificate SHA-1 digest: 8301c89a552264e99eb9f2116f9a77c3ba6f4d6a
+Signer #1 certificate MD5 digest: f88b2f0edb08d802d25b59da24e257ce
+Signer #1 key algorithm: RSA
+Signer #1 key size (bits): 3072
+Signer #1 public key SHA-256 digest: d0254a4b9eca64b1df767cb7a3784236ff1ef4532898ce8c490ffb821ece8498
+Signer #1 public key SHA-1 digest: 2b810527c69689e6b78f70ee58b37245f15d0d08
+Signer #1 public key MD5 digest: 51964675319b9cae4efaa6a457ff8b6c
+
+Algorithm       Hash                                                                   Path
+---------       ----                                                                   ----
+SHA256          D6EC14365F32B1B7578A38D5275BAEAED837B668D2F9FCE3279B3C89F537DB48       D:\Projects\AIProjects\aict\dist…
+

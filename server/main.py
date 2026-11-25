@@ -7,6 +7,9 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import ipaddress
+import urllib.request
 import secrets
 import sys
 from collections import defaultdict, deque
@@ -30,6 +33,7 @@ class Gateway:
         self.events = defaultdict(lambda: deque(maxlen=256))
         self.event_sequence = 0
         self.watchers = defaultdict(set)
+        self.updates = None
 
     async def control(self, reader, writer):
         device = None
@@ -45,8 +49,14 @@ class Gateway:
             LOG.info('device online: %s', device)
             writer.write(b'{"type":"welcome","protocol":1}\n')
             await writer.drain()
+            if self.updates:
+                self.updates.online(device)
             while line := await reader.readline():
                 msg = json.loads(line)
+                if msg.get('type') == 'deviceSettings':
+                    if self.devices.get(device, {}).get('writer') is writer:
+                        hello['acceptRemoteControl'] = msg.get('acceptRemoteControl') is True
+                    continue
                 if msg.get('type') == 'event':
                     self.event_sequence += 1
                     event = dict(msg, sequence=self.event_sequence, deviceId=device)
@@ -87,7 +97,8 @@ class Gateway:
             self.pending.pop((device, request_id), None)
 
     async def devices_api(self, request):
-        return web.json_response([dict(v['hello']) for v in self.devices.values()])
+        return web.json_response([dict(v['hello']) for v in self.devices.values()
+                                  if v['hello'].get('acceptRemoteControl') is True])
 
     async def rpc_api(self, request):
         command = await request.json()
@@ -167,7 +178,17 @@ class SSHServer(asyncssh.SSHServer):
         return True
 
     def validate_public_key(self, username, key):
-        return username == self.config['username'] and key == self.config['client_public_key']
+        if username == self.config['username']:
+            return key == self.config['client_public_key']
+        # Additional trusted users have their own public key; never use username as a path unchecked.
+        import re
+        if not re.fullmatch(r'[a-z][a-z0-9_-]{0,31}', username):
+            return False
+        try:
+            allowed = asyncssh.read_public_key(ROOT / '.secrets/users' / (username + '.pub'))
+            return key == allowed
+        except (OSError, ValueError):
+            return False
 
     def connection_requested(self, dest_host, dest_port, orig_host, orig_port):
         return dest_host == '127.0.0.1' and dest_port in {
@@ -185,6 +206,34 @@ async def pump(reader, writer):
         pass
 
 
+def upstream_proxy(host, scheme):
+    """Keep local services local; follow the Windows user's configured proxy."""
+    if host.lower() == 'localhost':
+        return None
+    try:
+        if ipaddress.ip_address(host).is_loopback:
+            return None
+    except ValueError:
+        pass
+    explicit = os.environ.get('AICT_UPSTREAM_PROXY')
+    if explicit is not None:
+        value = explicit
+    elif sys.platform == 'win32':
+        if urllib.request.proxy_bypass_registry(host):
+            return None
+        value = urllib.request.getproxies_registry().get(scheme)
+    else:
+        if urllib.request.proxy_bypass(host):
+            return None
+        value = urllib.request.getproxies().get(scheme)
+    if not value:
+        return None
+    address = urlsplit(value if '://' in value else 'http://' + value)
+    if address.scheme != 'http' or not address.hostname or address.username is not None:
+        raise ValueError('AICT upstream must be an HTTP proxy without credentials')
+    return address.hostname, address.port or 80
+
+
 async def proxy(reader, writer):
     """Trusted-client HTTP proxy, including CONNECT and WebSocket upgrades."""
     upstream = None
@@ -195,15 +244,25 @@ async def proxy(reader, writer):
         if method == 'CONNECT':
             host, port = raw_target.rsplit(':', 1)
             host = host.strip('[]')
-            remote_reader, upstream = await asyncio.open_connection(host, int(port))
+            via = upstream_proxy(host, 'https')
+            remote_reader, upstream = await asyncio.wait_for(asyncio.open_connection(*(via or (host, int(port)))), 20)
+            if via:
+                upstream.write(f'CONNECT {raw_target} HTTP/1.1\r\nHost: {raw_target}\r\n\r\n'.encode('latin1'))
+                await upstream.drain()
+                response = await asyncio.wait_for(remote_reader.readuntil(b'\r\n\r\n'), 30)
+                if response.split(b'\r\n', 1)[0].split()[1] != b'200':
+                    writer.write(response)
+                    await writer.drain()
+                    return
             writer.write(b'HTTP/1.1 200 Connection Established\r\n\r\n')
             await writer.drain()
         else:
             url = urlsplit(raw_target)
             if url.scheme not in ('http', 'ws') or not url.hostname:
                 raise ValueError('expected absolute HTTP proxy request target')
-            remote_reader, upstream = await asyncio.open_connection(url.hostname, url.port or 80)
-            path = (url.path or '/') + ('?' + url.query if url.query else '')
+            via = upstream_proxy(url.hostname, 'http')
+            remote_reader, upstream = await asyncio.wait_for(asyncio.open_connection(*(via or (url.hostname, url.port or 80))), 20)
+            path = raw_target if via else (url.path or '/') + ('?' + url.query if url.query else '')
             upgrade = any(line.lower().startswith(b'upgrade:') for line in lines[1:])
             headers = [line for line in lines[1:] if line and not line.lower().startswith(b'proxy-connection:')]
             if not upgrade:
@@ -235,7 +294,10 @@ async def serve(args):
     config = json.loads((ROOT / '.secrets/server.json').read_text('utf-8'))
     config['client_public_key'] = asyncssh.read_public_key(ROOT / '.secrets/client.pub')
     gateway = Gateway(config)
+    from device_updates import DeviceUpdates
+    gateway.updates = DeviceUpdates(gateway)
     app = web.Application(client_max_size=MAX_LINE)
+    gateway.updates.install(app)
     from codex_mobile import CodexMobile
     mobile = CodexMobile(gateway)
     mobile.install(app)

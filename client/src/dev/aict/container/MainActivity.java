@@ -80,6 +80,14 @@ public final class MainActivity extends Activity {
         back = iconButton("back","后退",v -> { if(web!=null && web.canGoBack()) web.goBack(); });
         forward = iconButton("forward","前进",v -> { if(web!=null && web.canGoForward()) web.goForward(); });
         reload = iconButton("reload","刷新",v -> { if(web==null)return; if(loading.contains(web)){web.stopLoading();loading.remove(web);updateNavigation();}else web.reload(); });
+        reload.setOnLongClickListener(v -> {
+            if (web == null) return true;
+            web.stopLoading();
+            web.clearCache(true);
+            web.reload();
+            Toast.makeText(this,"已清除网页缓存，正在重新加载",Toast.LENGTH_SHORT).show();
+            return true;
+        });
         topBar.addView(back,new LinearLayout.LayoutParams(dp(44),dp(48)));
         topBar.addView(forward,new LinearLayout.LayoutParams(dp(44),dp(48)));
         topBar.addView(reload,new LinearLayout.LayoutParams(dp(44),dp(48)));

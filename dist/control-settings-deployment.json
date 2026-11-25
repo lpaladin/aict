@@ -1,0 +1,42 @@
+[
+  {
+    "direction": "toPhone",
+    "projectPath": "D:\\Projects\\AIProjects\\aict\\dist\\aict-control-settings-0.4.1.apk",
+    "phonePath": "/storage/emulated/0/Android/data/org.autojs.autojs6.inrt/files/Download/aict-d23ca611-aict-control-settings-0.4.1.apk",
+    "bytes": 54764749,
+    "sha256": "5182064a494a8f54385ab8fb74813e129fdd7034035b83d95c63e72a8016c61c",
+    "verified": true,
+    "verification": "phone-local SHA-256 of persisted bytes",
+    "contentIncluded": false,
+    "device": "a5f3feb4-5270-4b42-9d74-80742fa35201",
+    "credentialId": "aict-demo-001",
+    "installer": {
+      "id": "60b785209327966953fd8886",
+      "ok": true,
+      "result": {
+        "installerOpened": true
+      },
+      "taskId": "60b785209327966953fd8886"
+    }
+  },
+  {
+    "direction": "toPhone",
+    "projectPath": "D:\\Projects\\AIProjects\\aict\\dist\\aict-user2-control-settings-0.4.1.apk",
+    "phonePath": "/storage/emulated/0/Android/data/org.autojs.autojs6.inrt/files/Download/aict-f379a1fc-aict-user2-control-settings-0.4.1.apk",
+    "bytes": 54764749,
+    "sha256": "8c5cbb21ea873b46bb61004a6982adce037954d03cf0d29dc6e70bac71672d1a",
+    "verified": true,
+    "verification": "phone-local SHA-256 of persisted bytes",
+    "contentIncluded": false,
+    "device": "16576d30-f57c-4e88-9c5b-80b6199ef254",
+    "credentialId": "aict-user2-001",
+    "installer": {
+      "id": "ad16c1529abebe0068112cf3",
+      "ok": true,
+      "result": {
+        "installerOpened": true
+      },
+      "taskId": "ad16c1529abebe0068112cf3"
+    }
+  }
+]

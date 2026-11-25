@@ -10,6 +10,8 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /** Owns one SSH session; no system proxy or VPN is changed. */
 public final class ConnectionService extends Service {
@@ -20,9 +22,55 @@ public final class ConnectionService extends Service {
     private volatile boolean running;
     private volatile Session session;
     private Thread worker;
+    private volatile OutputStream controlOutput;
+    // Accessibility callbacks run on the main thread. Serialize SSH replies off it.
+    private static final ExecutorService REPLIES = Executors.newSingleThreadExecutor(r -> {
+        Thread thread = new Thread(r, "AICT-Control-Replies");
+        thread.setDaemon(true);
+        return thread;
+    });
+    public static final String ACCEPT_CONTROL = "acceptRemoteControl";
+    public static final String SSH_PORT = "sshPort";
+    public static int getSshPort(Context context) throws Exception {
+        int saved = context.getSharedPreferences("aict", MODE_PRIVATE).getInt(SSH_PORT, 0);
+        if (saved >= 1 && saved <= 65535) return saved;
+        try (InputStream in = context.getAssets().open("connection.json");
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[4096]; int count;
+            while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
+            return new JSONObject(out.toString("UTF-8")).getInt("port");
+        }
+    }
+    public static boolean acceptsRemoteControl(Context context) {
+        return context.getSharedPreferences("aict", MODE_PRIVATE).getBoolean(ACCEPT_CONTROL, false);
+    }
+    private final SharedPreferences.OnSharedPreferenceChangeListener preferenceListener = (prefs, key) -> {
+        if (SSH_PORT.equals(key)) {
+            connected = false;
+            new Thread(() -> {
+                Session ssh = session;
+                if (ssh != null) ssh.disconnect();
+                Thread thread = worker;
+                if (thread != null) thread.interrupt();
+            }, "AICT-Reconnect").start();
+        }
+        if (ACCEPT_CONTROL.equals(key)) new Thread(() -> {
+            try {
+                synchronized (ConnectionService.class) {
+                    OutputStream output = controlOutput;
+                    if (output != null) write(output, new JSONObject().put("type", "deviceSettings")
+                        .put(ACCEPT_CONTROL, acceptsRemoteControl(this)));
+                }
+            } catch (Exception e) {
+                Session ssh = session;
+                if (ssh != null) ssh.disconnect();
+            }
+        }, "AICT-Settings").start();
+    };
 
     @Override public void onCreate() {
         super.onCreate();
+        getSharedPreferences("aict", MODE_PRIVATE).registerOnSharedPreferenceChangeListener(preferenceListener);
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         nm.createNotificationChannel(new NotificationChannel("aict.connection", "AIct 连接", NotificationManager.IMPORTANCE_LOW));
         Intent stop = new Intent(this, ConnectionService.class).setAction("stop");
@@ -49,6 +97,7 @@ public final class ConnectionService extends Service {
         while (running) {
             try {
                 config = new JSONObject(readAsset("connection.json"));
+                config.put("port", getSshPort(this));
                 credentialId = config.getString("credentialId");
                 android.content.SharedPreferences prefs = getSharedPreferences("aict", MODE_PRIVATE);
                 installationId = prefs.getString("installationId", null);
@@ -56,7 +105,7 @@ public final class ConnectionService extends Service {
                     installationId = UUID.randomUUID().toString();
                     prefs.edit().putString("installationId", installationId).commit();
                 }
-                status = "正在连接 " + config.getString("host");
+                status = "正在连接 " + config.getString("host") + ":" + config.getInt("port");
                 JSch jsch = new JSch();
                 jsch.setHostKeyRepository(new PinnedHostKey(config.getString("hostKeySha256")));
                 jsch.addIdentity("embedded-user", config.getString("privateKey").getBytes(StandardCharsets.UTF_8), null, null);
@@ -66,6 +115,7 @@ public final class ConnectionService extends Service {
                 ssh.setServerAliveInterval(20000);
                 ssh.setServerAliveCountMax(3);
                 ssh.connect(15000);
+                if (config.getInt("port") != getSshPort(this)) throw new IOException("SSH port changed; reconnecting");
                 proxyPort = ssh.setPortForwardingL("127.0.0.1", 0, "127.0.0.1", config.getInt("proxyPort"));
                 ChannelDirectTCPIP channel = (ChannelDirectTCPIP) ssh.openChannel("direct-tcpip");
                 channel.setHost("127.0.0.1");
@@ -77,10 +127,15 @@ public final class ConnectionService extends Service {
                 channel.connect(10000);
                 JSONObject hello = new JSONObject().put("type", "hello").put("protocol", 1)
                     .put("credentialId", credentialId).put("installationId", installationId)
-                    .put("model", Build.MODEL).put("sdk", Build.VERSION.SDK_INT);
-                write(output, hello);
+                    .put("model", Build.MODEL).put("sdk", Build.VERSION.SDK_INT)
+                    .put(ACCEPT_CONTROL, acceptsRemoteControl(this));
+                synchronized (ConnectionService.class) {
+                    hello.put(ACCEPT_CONTROL, acceptsRemoteControl(this));
+                    write(output, hello);
+                    controlOutput = output;
+                }
                 connected = true;
-                status = "SSH 已认证 · " + config.getString("host");
+                status = "SSH 已认证 · " + config.getString("host") + ":" + config.getInt("port");
                 delay = 1000;
                 BufferedReader reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8));
                 while (running && ssh.isConnected()) {
@@ -89,16 +144,21 @@ public final class ConnectionService extends Service {
                     if (line.length() > 8 * 1024 * 1024) throw new IOException("control frame too large");
                     JSONObject msg = new JSONObject(line);
                     if ("request".equals(msg.optString("type"))) {
-                        NativeRuntime.dispatch(this, line, result -> {
+                        NativeRuntime.dispatch(this, line, result -> REPLIES.execute(() -> {
+                            if (controlOutput != output) return;
                             try { write(output, result); }
-                            catch (Exception e) { channel.disconnect(); }
-                        });
+                            catch (Exception e) {
+                                android.util.Log.e("AICT", "Control reply failed for " + result.optString("id"), e);
+                                channel.disconnect();
+                            }
+                        }));
                     }
                 }
             } catch (Exception e) {
                 status = "连接失败：" + e.getClass().getSimpleName() + " · " + e.getMessage();
                 android.util.Log.e("AICT", "SSH connection failed", e);
             } finally {
+                controlOutput = null;
                 connected = false;
                 if (session != null) session.disconnect();
                 session = null;
@@ -122,6 +182,8 @@ public final class ConnectionService extends Service {
         output.flush();
     }
     @Override public void onDestroy() {
+        getSharedPreferences("aict", MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(preferenceListener);
+        controlOutput = null;
         running = false;
         connected = false;
         if (session != null) session.disconnect();
