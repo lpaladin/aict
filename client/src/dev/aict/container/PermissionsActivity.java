@@ -15,6 +15,8 @@ import java.util.concurrent.ConcurrentHashMap;
 /** Fixed platform authorization UI; no application business workflow lives here. */
 public final class PermissionsActivity extends Activity {
     private static final Map<String,NativeRuntime.Reply> REQUESTS=new ConcurrentHashMap<>();
+    private static final String INSTALL_PACKAGES = android.Manifest.permission.REQUEST_INSTALL_PACKAGES;
+    private static final int INSTALL_PACKAGES_SETTINGS_REQUEST = 911;
     private String requestId;
     private final JSONObject requestedResults=new JSONObject();
     public static void request(Context context,JSONArray permissions,NativeRuntime.Reply reply,String id){
@@ -49,8 +51,10 @@ public final class PermissionsActivity extends Activity {
             if (Build.VERSION.SDK_INT >= 33) Collections.addAll(queue, "android.permission.POST_NOTIFICATIONS", "android.permission.READ_MEDIA_IMAGES", "android.permission.READ_MEDIA_VIDEO", "android.permission.READ_MEDIA_AUDIO");
             else Collections.addAll(queue, "android.permission.READ_EXTERNAL_STORAGE", "android.permission.WRITE_EXTERNAL_STORAGE");
             if (Build.VERSION.SDK_INT >= 31) Collections.addAll(queue, "android.permission.BLUETOOTH_CONNECT", "android.permission.BLUETOOTH_SCAN");
+            queue.add(INSTALL_PACKAGES);
             nextPermission();
         });
+        add("允许安装未知应用（用于 AICT 更新）", () -> open(installPackagesSettings()));
         add("无障碍：启用 AutoJs6 操作服务与 AIct Vision", () -> open(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
         if (Build.VERSION.SDK_INT >= 30) add("所有文件访问", () -> open(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:" + getPackageName()))));
         add("选择并长期授权一个目录", () -> startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION), 902));
@@ -105,9 +109,31 @@ public final class PermissionsActivity extends Activity {
     }
 
     private void open(Intent intent) { startActivity(intent); }
+    private Intent installPackagesSettings() {
+        return new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.fromParts("package", getPackageName(), null));
+    }
+
+    private void recordInstallPermission() {
+        try {
+            requestedResults.put(INSTALL_PACKAGES, getPackageManager().canRequestPackageInstalls());
+        } catch (JSONException ignored) {}
+    }
+
     private void nextPermission() {
         while (!queue.isEmpty()) {
             String permission = queue.removeFirst();
+            if (INSTALL_PACKAGES.equals(permission)) {
+                recordInstallPermission();
+                if (!requestedResults.optBoolean(INSTALL_PACKAGES)) {
+                    try {
+                        startActivityForResult(installPackagesSettings(), INSTALL_PACKAGES_SETTINGS_REQUEST);
+                        return;
+                    } catch (ActivityNotFoundException | SecurityException e) {
+                        android.util.Log.w("AICT", "Install permission settings unavailable", e);
+                    }
+                }
+                continue;
+            }
             try{requestedResults.put(permission,checkSelfPermission(permission)==PackageManager.PERMISSION_GRANTED);}catch(JSONException ignored){}
             if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) {
                 if (permission.equals("android.permission.ACCESS_FINE_LOCATION") && Build.VERSION.SDK_INT >= 31) requestPermissions(new String[]{"android.permission.ACCESS_COARSE_LOCATION", permission}, 910);
@@ -122,6 +148,11 @@ public final class PermissionsActivity extends Activity {
     @Override protected void onDestroy(){if(isFinishing()&&requestId!=null){NativeRuntime.Reply pending=REQUESTS.remove(requestId);if(pending!=null)pending.send(NativeRuntime.error(requestId,new IllegalStateException("Permission request cancelled")));}super.onDestroy();}
     @Override protected void onActivityResult(int code, int result, Intent data) {
         super.onActivityResult(code, result, data);
+        if (code == INSTALL_PACKAGES_SETTINGS_REQUEST) {
+            recordInstallPermission();
+            nextPermission();
+            return;
+        }
         if (code == 902 && result == RESULT_OK && data != null && data.getData() != null) {
             int flags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
             getContentResolver().takePersistableUriPermission(data.getData(), flags);

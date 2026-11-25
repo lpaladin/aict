@@ -38,6 +38,7 @@ for activity in app.findall('activity'):
 
 for name in (
     'android.permission.FOREGROUND_SERVICE_SPECIAL_USE',
+    'android.permission.REQUEST_INSTALL_PACKAGES',
     'android.permission.BLUETOOTH_CONNECT',
     'android.permission.BLUETOOTH_SCAN',
     'android.permission.USE_BIOMETRIC',
