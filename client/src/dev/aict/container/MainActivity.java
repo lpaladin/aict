@@ -13,7 +13,9 @@ import android.content.res.Configuration;
 import android.content.res.ColorStateList;
 import android.graphics.*;
 import android.graphics.drawable.*;
+import org.json.JSONException;
 import org.json.JSONObject;
+import org.json.JSONTokener;
 import java.io.*;
 import java.lang.reflect.Method;
 import java.net.*;
@@ -117,7 +119,7 @@ public final class MainActivity extends Activity {
     }
 
     private WebView createWebView() {
-        WebView w = new WebView(this);
+        WebView w = new ContextWebView();
         WebSettings settings = w.getSettings();
         settings.setJavaScriptEnabled(true); settings.setDomStorageEnabled(true);
         settings.setSupportMultipleWindows(true); settings.setJavaScriptCanOpenWindowsAutomatically(true);
@@ -206,7 +208,9 @@ public final class MainActivity extends Activity {
                 @Override public void handleMessage(Message msg) {
                     String link = msg.getData().getString("url"); if(link==null) link=hit.getExtra();
                     if(link==null) return; final String url=link;
-                    showLinkMenu(url);
+                    readPageContext(w, url, context -> {
+                        if (w == web) showLinkMenu(url, context);
+                    });
                 }
             };
             w.requestFocusNodeHref(handler.obtainMessage()); return true;
@@ -359,7 +363,81 @@ public final class MainActivity extends Activity {
     }
 
     private int dp(float value){return Math.round(value*getResources().getDisplayMetrics().density);}
-    private void showLinkMenu(String url){
+    private void readPageContext(WebView view, String link, ValueCallback<String> callback) {
+        String page = view.getUrl();
+        view.evaluateJavascript("window[Symbol.for('aict.contextAtSelection')]?.(" +
+            JSONObject.quote(link == null ? "" : link) + ")", value -> {
+            String context = null;
+            if (view == web && Objects.equals(page, view.getUrl()) && value != null) {
+                try {
+                    Object result = new JSONTokener(value).nextValue();
+                    if (result instanceof String) context = (String) result;
+                } catch (JSONException ignored) {}
+            }
+            callback.onReceiveValue(context);
+        });
+    }
+
+    private void copyPageContext(String context) {
+        android.content.ClipboardManager manager = getSystemService(android.content.ClipboardManager.class);
+        manager.setPrimaryClip(ClipData.newPlainText("网页上下文", context));
+        if (Build.VERSION.SDK_INT < 33) Toast.makeText(this, "上下文已复制", Toast.LENGTH_SHORT).show();
+    }
+
+    private final class ContextWebView extends WebView {
+        private static final int COPY_CONTEXT = 0x41494354;
+
+        ContextWebView() { super(MainActivity.this); }
+
+        @Override public ActionMode startActionMode(ActionMode.Callback callback, int type) {
+            if (type != ActionMode.TYPE_FLOATING || getHitTestResult().getType() == HitTestResult.EDIT_TEXT_TYPE)
+                return super.startActionMode(callback, type);
+            return super.startActionMode(new ActionMode.Callback2() {
+                private boolean addCopyContext(Menu menu) {
+                    if (menu.findItem(COPY_CONTEXT) != null) return false;
+                    menu.add(Menu.NONE, COPY_CONTEXT, Menu.CATEGORY_SECONDARY, "复制上下文")
+                        .setShowAsAction(MenuItem.SHOW_AS_ACTION_NEVER);
+                    return true;
+                }
+
+                @Override public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                    if (!callback.onCreateActionMode(mode, menu)) return false;
+                    addCopyContext(menu);
+                    return true;
+                }
+
+                @Override public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                    boolean changed = callback.onPrepareActionMode(mode, menu);
+                    return addCopyContext(menu) || changed;
+                }
+
+                @Override public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                    if (item.getItemId() != COPY_CONTEXT) return callback.onActionItemClicked(mode, item);
+                    readPageContext(ContextWebView.this, null, context -> {
+                        if (context != null) {
+                            copyPageContext(context);
+                            mode.finish();
+                        } else if (ContextWebView.this == web) {
+                            Toast.makeText(MainActivity.this, "无法读取选中的网页上下文", Toast.LENGTH_SHORT).show();
+                        }
+                    });
+                    return true;
+                }
+
+                @Override public void onDestroyActionMode(ActionMode mode) {
+                    callback.onDestroyActionMode(mode);
+                }
+
+                @Override public void onGetContentRect(ActionMode mode, View view, Rect outRect) {
+                    if (callback instanceof ActionMode.Callback2)
+                        ((ActionMode.Callback2) callback).onGetContentRect(mode, view, outRect);
+                    else super.onGetContentRect(mode, view, outRect);
+                }
+            }, type);
+        }
+    }
+
+    private void showLinkMenu(String url, String context){
         Dialog dialog=new Dialog(this);dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         LinearLayout sheet=new LinearLayout(this);sheet.setOrientation(LinearLayout.VERTICAL);sheet.setPadding(dp(20),dp(12),dp(20),dp(20));
         GradientDrawable background=rounded(surface,0);float radius=dp(20);background.setCornerRadii(new float[]{radius,radius,radius,radius,0,0,0,0});sheet.setBackground(background);
@@ -370,6 +448,16 @@ public final class MainActivity extends Activity {
         open.setOnClickListener(v->{dialog.dismiss();WebView tab=createWebView();addTab(tab);tab.loadUrl(url);});
         TextView copy=text("复制链接",15);copy.setGravity(Gravity.CENTER_VERTICAL);copy.setPadding(dp(12),0,dp(12),0);copy.setBackground(touchBackground(Color.TRANSPARENT,12));LinearLayout.LayoutParams copyParams=new LinearLayout.LayoutParams(-1,dp(52));copyParams.topMargin=dp(6);sheet.addView(copy,copyParams);
         copy.setOnClickListener(v->{((android.content.ClipboardManager)getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText("链接",url));dialog.dismiss();if(Build.VERSION.SDK_INT<33)Toast.makeText(this,"链接已复制",Toast.LENGTH_SHORT).show();});
+        if (context != null) {
+            TextView copyContext = text("复制上下文", 15);
+            copyContext.setGravity(Gravity.CENTER_VERTICAL);
+            copyContext.setPadding(dp(12),0,dp(12),0);
+            copyContext.setBackground(touchBackground(Color.TRANSPARENT,12));
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1,dp(52));
+            params.topMargin = dp(6);
+            sheet.addView(copyContext, params);
+            copyContext.setOnClickListener(v -> { copyPageContext(context); dialog.dismiss(); });
+        }
         dialog.setContentView(sheet);Window window=dialog.getWindow();if(window!=null){window.setBackgroundDrawableResource(android.R.color.transparent);window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);window.setDimAmount(.28f);window.setGravity(Gravity.BOTTOM);window.setNavigationBarColor(surface);}
         dialog.show();if(window!=null)window.setLayout(-1,-2);
     }
