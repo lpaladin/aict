@@ -70,17 +70,26 @@ for name in (
     if not any(p.get(a('name')) == name for p in root.findall('uses-permission')):
         ET.SubElement(root, 'uses-permission', {a('name'): name})
 
-for name in ('MainActivity', 'PermissionsActivity', 'CaptureActivity'):
+for name in ('MainActivity', 'PermissionsActivity', 'CaptureActivity', 'ShareActivity'):
     existing = [x for x in app.findall('activity') if x.get(a('name')) == 'dev.aict.container.' + name]
     for element in existing: app.remove(element)
     element = ET.SubElement(app, 'activity', {a('name'): 'dev.aict.container.' + name,
-        a('exported'): 'true' if name == 'MainActivity' else 'false',
+        a('exported'): 'true' if name in ('MainActivity', 'ShareActivity') else 'false',
         a('theme'): '@android:style/Theme.Material.Light.NoActionBar'})
     if name == 'MainActivity':
         element.set(a('configChanges'), 'keyboardHidden|orientation|screenSize|uiMode')
         intent = ET.SubElement(element, 'intent-filter')
         ET.SubElement(intent, 'action', {a('name'): 'android.intent.action.MAIN'})
         ET.SubElement(intent, 'category', {a('name'): 'android.intent.category.LAUNCHER'})
+    if name == 'ShareActivity':
+        element.set(a('configChanges'), 'keyboardHidden|orientation|screenSize|uiMode')
+        for action in ('SEND', 'SEND_MULTIPLE'):
+            for mime in (None, '*/*'):
+                intent = ET.SubElement(element, 'intent-filter')
+                ET.SubElement(intent, 'action', {a('name'): 'android.intent.action.' + action})
+                ET.SubElement(intent, 'category', {a('name'): 'android.intent.category.DEFAULT'})
+                if mime:
+                    ET.SubElement(intent, 'data', {a('mimeType'): mime})
     if name == 'CaptureActivity':
         element.set(a('configChanges'), 'orientation|screenSize')
 

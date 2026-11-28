@@ -282,6 +282,64 @@ class MobileTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, 'SHA-256 mismatch'):
             await transfer(one, 'toPhone', {'projectPath': 'source.bin', 'phonePath': '/downloads/target.bin'})
 
+    async def test_thread_actions_persist_and_notify_clients(self):
+        project = self.host.project('phone-one')
+        project.state['threads'] = [{'id': 'existing'}, {'id': 'empty', 'persisted': False}]
+        project.start = AsyncMock()
+        project.rpc = AsyncMock()
+        async with self.client.ws_connect('/api/codex/phone-one/ws') as first, self.client.ws_connect('/api/codex/phone-one/ws') as second:
+            self.assertTrue((await first.receive_json())['session']['threadActions'])
+            await second.receive_json()
+
+            async def change(request_id, method, expected, **params):
+                await first.send_json({'id': request_id, 'method': method, 'params': params})
+                for client in (first, second):
+                    event = (await client.receive_json(timeout=2))['event']
+                    self.assertEqual(event, {'method': 'aict/threadChanged', 'params': expected})
+                self.assertEqual(await first.receive_json(timeout=2), {'id': request_id, 'result': {}})
+
+            await change(1, 'thread/pin', {'threadId': 'existing', 'pinned': True}, threadId='existing', pinned=True)
+            restored = CodexMobile(self.gateway, self.test_dir).project('phone-one')
+            self.assertTrue(restored.state['threads'][0]['pinned'])
+            await change(2, 'thread/pin', {'threadId': 'existing', 'pinned': False}, threadId='existing', pinned=False)
+            await change(3, 'thread/delete', {'threadId': 'empty', 'deleted': True}, threadId='empty')
+            project.rpc.assert_not_awaited()
+            await change(4, 'thread/delete', {'threadId': 'existing', 'deleted': True}, threadId='existing')
+            project.rpc.assert_awaited_once_with('thread/delete', {'threadId': 'existing'})
+        restored = CodexMobile(self.gateway, self.test_dir).project('phone-one')
+        self.assertEqual(restored.state['threads'], [])
+        with self.assertRaisesRegex(ValueError, 'does not belong'):
+            await project.dispatch('thread/delete', {'threadId': 'foreign'})
+
+    async def test_thread_deletion_serializes_with_turns_and_preserves_failed_deletes(self):
+        project = self.host.project('phone-one')
+        project.state['threads'] = [{'id': 'existing', 'name': 'Existing'}]
+        project.start = AsyncMock()
+        project.resume = AsyncMock()
+        started, finish = asyncio.Event(), asyncio.Event()
+
+        async def rpc(method, _params):
+            if method == 'turn/start':
+                started.set()
+                await finish.wait()
+                return {'turn': {'id': 'active-turn', 'status': 'inProgress'}}
+            raise RuntimeError('delete failed')
+
+        project.rpc = AsyncMock(side_effect=rpc)
+        starting = asyncio.create_task(project.dispatch('turn/start', {'threadId': 'existing', 'input': []}))
+        await asyncio.wait_for(started.wait(), 2)
+        deleting = asyncio.create_task(project.dispatch('thread/delete', {'threadId': 'existing'}))
+        await asyncio.sleep(0)
+        self.assertFalse(deleting.done())
+        finish.set()
+        await starting
+        with self.assertRaisesRegex(ValueError, '正在运行'):
+            await deleting
+        project.active.clear()
+        with self.assertRaisesRegex(RuntimeError, 'delete failed'):
+            await project.dispatch('thread/delete', {'threadId': 'existing'})
+        project.owns('existing')
+
     async def test_new_thread_pins_supported_history_mode(self):
         one = self.host.project('phone-one')
         one.start = AsyncMock()

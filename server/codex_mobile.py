@@ -7,6 +7,7 @@ import shutil
 import uuid
 import time
 from pathlib import Path
+from weakref import WeakValueDictionary
 
 from aiohttp import web, WSMsgType
 from app_folder import render_folder
@@ -108,6 +109,8 @@ class DeviceProject:
         self.requests = {}
         self.clients = set()
         self.lock = asyncio.Lock()
+        self.thread_locks = WeakValueDictionary()
+        self.resumed = set()
         self.tasks = set()
         self.transfers = {}
         self.active = {}
@@ -351,6 +354,39 @@ class DeviceProject:
         await self.broadcast({'method': 'aict/requestResolved', 'params': {'requestId': pending['id']}})
 
     async def dispatch(self, method, params):
+        thread_id = params.get('threadId')
+        if thread_id is not None:
+            if not isinstance(thread_id, str):
+                raise ValueError('无效的会话 ID')
+            lock = self.thread_locks.setdefault(thread_id, asyncio.Lock())
+            async with lock:
+                return await self.dispatch_thread(method, params)
+        return await self.dispatch_thread(method, params)
+
+    async def dispatch_thread(self, method, params):
+        if method in {'thread/pin', 'thread/delete'}:
+            thread_id = params['threadId']
+            self.owns(thread_id)
+            entry = next(t for t in self.state['threads'] if t['id'] == thread_id)
+            if method == 'thread/pin':
+                pinned = params.get('pinned')
+                if not isinstance(pinned, bool):
+                    raise ValueError('无效的置顶状态')
+                entry['pinned'] = pinned
+                self.save()
+                event = {'threadId': thread_id, 'pinned': pinned}
+            else:
+                if thread_id in self.active:
+                    raise ValueError('请先结束正在运行的会话')
+                if entry.get('persisted', True):
+                    await self.start()
+                    await self.rpc('thread/delete', {'threadId': thread_id})
+                self.state['threads'].remove(entry)
+                self.resumed.discard(thread_id)
+                self.save()
+                event = {'threadId': thread_id, 'deleted': True}
+            await self.broadcast({'method': 'aict/threadChanged', 'params': event})
+            return {}
         if method == 'turn/auto-approve-commands':
             if params.get('enabled') is False:
                 self.auto_approve_turns.clear()
@@ -435,7 +471,12 @@ class DeviceProject:
                 entry['lastActivityAt'] = int(time.time())
                 self.save()
             if method == 'turn/start':
-                entry = next(t for t in self.state['threads'] if t['id'] == params['threadId'])
+                thread_id = params['threadId']
+                started = result.get('turn', {})
+                # The response can precede turn/started, while a completed notification can also arrive before dispatch resumes.
+                if started.get('status') == 'inProgress' and started['id'] not in self.turn_progress:
+                    self.active.setdefault(thread_id, started['id'])
+                entry = next(t for t in self.state['threads'] if t['id'] == thread_id)
                 entry['persisted'] = True
                 if not entry.get('name'):
                     self.spawn(self.titles.ensure(params['threadId'], params.get('input', [])))
@@ -523,6 +564,7 @@ class CodexMobile:
         project.clients.add(ws)
         await ws.send_json({'session': {'device': device, 'projectId': project.key, 'cwd': str(project.cwd),
                                       'threads': project.state['threads'], 'active': project.active,
+                                      'threadActions': True,
                                       'requests': list(project.requests.values()), 'autoApproveTurns': list(project.auto_approve_turns)}})
         try:
             async for frame in ws:

@@ -23,7 +23,7 @@
     load(context.device);
     $('auto-continue').checked=enabled(context.device);
     const wait=pending.get(context.device);
-    $('auto-continue-note').textContent=wait?.threadId === context.thread ? wait.attempted ? '已尝试续接，请确认任务状态' : '等待用量恢复' : '用量恢复后续接当前任务';
+    $('auto-continue-note').textContent=wait && wait.threadId === context.thread ? wait.attempted ? '已尝试续接，请确认任务状态' : '等待用量恢复' : '用量恢复后续接当前任务';
   }
   async function maybeResume(device) {
     const context=access?.snapshot(), wait=pending.get(device), quota=quotas.get(device);

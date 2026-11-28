@@ -34,13 +34,17 @@ public final class MainActivity extends Activity {
     private ImageButton back, forward, reload;
     private LinearLayout homeChip, topBar, bottomBar;
     private TextView homeLabel;
-    private View connectionDot, topDivider, bottomDivider;
+    private ImageView connectionIcon;
+    private View topDivider, bottomDivider;
     private HorizontalScrollView tabScroll;
     private ProgressBar progressBar;
     private boolean dark;
     private int surface, ink, muted, accent, selected, divider;
     private final HashMap<WebView, TabItem> tabItems = new HashMap<>();
     private final HashSet<WebView> loading = new HashSet<>();
+    // Accessed only on the Android main thread by the two activities.
+    private static final ArrayDeque<String> sharedDrafts = new ArrayDeque<>();
+    private static boolean deliveringSharedDraft;
     private boolean entryLoaded;
     private int appliedProxy;
     private boolean applyingProxy;
@@ -54,6 +58,7 @@ public final class MainActivity extends Activity {
             status.setText(ConnectionService.status);
             updateConnectionIndicator();
             if (ConnectionService.connected && appliedProxy != ConnectionService.proxyPort && !applyingProxy) applyProxy();
+            deliverSharedDraft();
             main.postDelayed(this, 1000);
         }
     };
@@ -68,13 +73,18 @@ public final class MainActivity extends Activity {
         homeChip = new LinearLayout(this); homeChip.setGravity(Gravity.CENTER); homeChip.setPadding(dp(10),0,dp(10),0);
         homeChip.setOnClickListener(v -> openCodex()); homeChip.setContentDescription("Codex，固定标签页");
         homeLabel = text("Codex",14); homeLabel.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL)); homeChip.addView(homeLabel);
-        connectionDot = new View(this); LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(6),dp(6)); dotParams.leftMargin=dp(7); homeChip.addView(connectionDot,dotParams);
+        connectionIcon = new ImageView(this);
+        connectionIcon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        LinearLayout.LayoutParams connectionIconParams = new LinearLayout.LayoutParams(dp(6), dp(6));
+        connectionIconParams.setMarginStart(dp(5));
+        homeChip.addView(connectionIcon, connectionIconParams);
         // The visual pill is 34dp tall; its parent retains a 48dp touch target.
         FrameLayout homeTarget = new FrameLayout(this); homeTarget.setOnClickListener(v -> openCodex());
         homeTarget.setContentDescription("切换到 Codex，长按查看连接状态");
-        FrameLayout.LayoutParams chipParams = new FrameLayout.LayoutParams(-1,dp(34),Gravity.CENTER);
-        homeTarget.addView(homeChip,chipParams); topBar.addView(homeTarget,new LinearLayout.LayoutParams(dp(86),dp(48)));
-        View.OnLongClickListener connectionDetails = v -> { new AlertDialog.Builder(this).setTitle("连接状态").setMessage(status.getText()).setPositiveButton("确定",null).show(); return true; };
+        FrameLayout.LayoutParams chipParams = new FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(34), Gravity.CENTER);
+        homeTarget.addView(homeChip, chipParams);
+        topBar.addView(homeTarget, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)));
+        View.OnLongClickListener connectionDetails = v -> showConnectionDetails();
         homeChip.setOnLongClickListener(connectionDetails); homeTarget.setOnLongClickListener(connectionDetails);
         title = text("",13); title.setGravity(Gravity.CENTER); title.setPadding(dp(8),0,dp(8),0);
         title.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
@@ -297,6 +307,40 @@ public final class MainActivity extends Activity {
         if(web==window) select(windows.get(Math.max(0,index-1))); else updateTabs();
     }
     private void addTab(WebView tab) { windows.add(tab); pages.addView(tab,new FrameLayout.LayoutParams(-1,-1)); select(tab); }
+    static void openSharedDraft(Activity sender, String draft) {
+        sharedDrafts.addLast(draft);
+        sender.startActivity(new Intent(Intent.ACTION_MAIN)
+            .setClass(sender, MainActivity.class)
+            .addCategory(Intent.CATEGORY_LAUNCHER)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT));
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        NativeRuntime.activity = this;
+        if (!sharedDrafts.isEmpty()) openCodex();
+        deliverSharedDraft();
+    }
+
+    private void deliverSharedDraft() {
+        JSONObject config = ConnectionService.config;
+        String draft = sharedDrafts.peekFirst();
+        if (draft == null || !hasWindowFocus() || deliveringSharedDraft || config == null || home == null ||
+            !isCodexPage(home.getUrl(), config.optString("entryUrl"))) return;
+        // Check the URL inside the evaluated document too, in case navigation raced the Java check.
+        Uri current = Uri.parse(home.getUrl());
+        String origin = current.getScheme() + "://" + current.getEncodedAuthority();
+        String path = current.getEncodedPath();
+        if (path == null || path.isEmpty()) path = "/";
+        deliveringSharedDraft = true;
+        home.evaluateJavascript("(location.origin===" + JSONObject.quote(origin) +
+            "&&location.pathname===" + JSONObject.quote(path) +
+            "&&window.aictAcceptSharedDraft?.(" + draft + ")===true)", result -> {
+                deliveringSharedDraft = false;
+                if ("true".equals(result)) sharedDrafts.pollFirst();
+            });
+    }
+
     private void openCodex() {
         select(home);
         JSONObject config = ConnectionService.config;
@@ -492,10 +536,35 @@ public final class MainActivity extends Activity {
         getWindow().getDecorView().setSystemUiVisibility(flags);
         updateConnectionIndicator();updateTabs();
     }
-    private void updateConnectionIndicator(){
-        if(connectionDot==null)return;
-        connectionDot.setBackground(rounded(ConnectionService.connected?(dark?0xff72d6a3:0xff259b66):(dark?0xffe6b86a:0xffc28a32),3));
-        homeChip.setContentDescription("Codex，固定标签页，"+ConnectionService.status+"，长按查看详情");
+    private boolean isLanConnection() {
+        return ConnectionService.connected && "lan".equals(ConnectionService.connectionRoute);
+    }
+    private boolean showConnectionDetails() {
+        AlertDialog.Builder dialog = new AlertDialog.Builder(this)
+            .setTitle("连接状态").setMessage(status.getText()).setPositiveButton("确定", null);
+        if (isLanConnection()) {
+            dialog.setIcon(new LineIcon("lan", accent));
+            dialog.setMessage(ConnectionService.status);
+        }
+        dialog.show();
+        return true;
+    }
+    private void updateConnectionIndicator() {
+        if (connectionIcon == null) return;
+        boolean lan = isLanConnection();
+        LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) connectionIcon.getLayoutParams();
+        int size = dp(lan ? 22 : 6);
+        if (params.width != size) {
+            params.width = size;
+            params.height = size;
+            params.setMarginStart(dp(lan ? 7 : 5));
+            connectionIcon.setLayoutParams(params);
+        }
+        int dotColor = ConnectionService.connected
+            ? (dark ? 0xff72d6a3 : 0xff259b66) : (dark ? 0xffe6b86a : 0xffc28a32);
+        connectionIcon.setImageDrawable(lan ? new LineIcon("lan", accent)
+            : new LineIcon("connection-dot", dotColor));
+        homeChip.setContentDescription("Codex，固定标签页，" + ConnectionService.status + "，长按查看详情");
     }
     private void updateNavigation(){
         if(web==null || reload==null)return;
@@ -525,7 +594,7 @@ public final class MainActivity extends Activity {
     /** Small consistent vector icons, independent of fonts or platform button styling. */
     private final class LineIcon extends Drawable {
         private final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);private final String kind;
-        LineIcon(String kind,int color){this.kind=kind;paint.setColor(color);paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(1.7f);paint.setStrokeCap(Paint.Cap.ROUND);paint.setStrokeJoin(Paint.Join.ROUND);}
+        LineIcon(String kind,int color){this.kind=kind;paint.setColor(color);paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(kind.equals("lan") ? 2.2f : 1.7f);paint.setStrokeCap(Paint.Cap.ROUND);paint.setStrokeJoin(Paint.Join.ROUND);}
         @Override public int getIntrinsicWidth(){return dp(20);}@Override public int getIntrinsicHeight(){return dp(20);}
         private void line(Canvas c,float x,float y,float xx,float yy){c.drawLine(x,y,xx,yy,paint);}
         @Override public void draw(Canvas c){
@@ -535,6 +604,21 @@ public final class MainActivity extends Activity {
             else if(kind.equals("stop")){c.drawRoundRect(6,6,18,18,2,2,paint);}
             else if(kind.equals("reload")){c.drawArc(4.5f,4.5f,19.5f,19.5f,42,290,false,paint);line(c,19.5f,4,19.5f,9);line(c,19.5f,9,14.5f,9);}
             else if(kind.equals("globe")){c.drawCircle(12,12,8,paint);c.drawOval(8,4,16,20,paint);line(c,4,12,20,12);}
+            else if(kind.equals("connection-dot")){
+                paint.setStyle(Paint.Style.FILL);
+                c.drawCircle(12, 12, 12, paint);
+            }
+            else if(kind.equals("lan")){
+                line(c, 12, 9, 12, 12.5f);
+                line(c, 5.5f, 12.5f, 18.5f, 12.5f);
+                line(c, 5.5f, 12.5f, 5.5f, 16);
+                line(c, 18.5f, 12.5f, 18.5f, 16);
+                paint.setStyle(Paint.Style.FILL);
+                c.drawRoundRect(8.5f, 3.5f, 15.5f, 9.5f, 1.5f, 1.5f, paint);
+                c.drawRoundRect(2, 15.5f, 9, 21.5f, 1.5f, 1.5f, paint);
+                c.drawRoundRect(15, 15.5f, 22, 21.5f, 1.5f, 1.5f, paint);
+                paint.setStyle(Paint.Style.STROKE);
+            }
             else if(kind.equals("settings")){
                 c.drawCircle(12,12,3,paint);Path p=new Path();
                 for(int i=0;i<48;i++){double a=i*Math.PI/24;float r=(i%6==0||i%6==5)?8.1f:9.7f;float x=12+(float)Math.cos(a)*r,y=12+(float)Math.sin(a)*r;if(i==0)p.moveTo(x,y);else p.lineTo(x,y);}p.close();c.drawPath(p,paint);
@@ -551,7 +635,6 @@ public final class MainActivity extends Activity {
             fileCallback.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(result, data)); fileCallback = null;
         }
     }
-    @Override protected void onResume() { super.onResume(); NativeRuntime.activity = this; }
     @Override public void onBackPressed() {
         if (web.canGoBack()) web.goBack(); else if (web != home) closePopup(web); else super.onBackPressed();
     }
@@ -562,6 +645,7 @@ public final class MainActivity extends Activity {
         if (locationCallback != null) locationCallback.invoke(locationOrigin,false,false);
         if (fileCallback != null) fileCallback.onReceiveValue(null);
         for (WebView window : windows) { window.removeJavascriptInterface("AICTNative"); window.destroy(); }
+        deliveringSharedDraft = false;
         windows.clear(); super.onDestroy();
     }
 }

@@ -57,7 +57,7 @@ function styleCard() {
     windowView.card.setBackground(background); windowView.card.setClipToOutline(true);
     windowView.card.setElevation(dp(8));
     styleHeaderAction(windowView.goToAICT, 'open', '打开 AICT 并选中此会话');
-    styleHeaderAction(windowView.dismiss, 'close', '关闭悬浮窗');
+    styleHeaderAction(windowView.dismiss, 'hide', '隐藏悬浮窗');
 }
 function styleHeaderAction(view, action, description) {
     // Both glyphs use the same 24-unit grid and a centered 22dp image in a 44dp target.
@@ -79,8 +79,13 @@ function styleHeaderAction(view, action, description) {
         path.moveTo(11, 13); path.lineTo(19.5, 4.5);
         path.moveTo(14, 4.5); path.lineTo(19.5, 4.5); path.lineTo(19.5, 10);
     } else {
-        path.moveTo(5.5, 5.5); path.lineTo(18.5, 18.5);
-        path.moveTo(18.5, 5.5); path.lineTo(5.5, 18.5);
+        path.moveTo(3, 3); path.lineTo(21, 21);
+        path.moveTo(6.2, 6.2); path.quadTo(3.6, 8.2, 2, 12);
+        path.quadTo(6, 19, 12, 19); path.quadTo(15.1, 19, 17.8, 17.8);
+        path.moveTo(9.4, 5.4); path.quadTo(16.5, 3.2, 22, 12);
+        path.quadTo(21, 13.8, 19.8, 15);
+        path.moveTo(9, 11.6); path.quadTo(8.8, 15.2, 12.4, 15);
+        path.moveTo(11.6, 9); path.quadTo(15.2, 8.8, 15, 12.4);
     }
     canvas.drawPath(path, paint);
     view.setScaleType(android.widget.ImageView.ScaleType.CENTER);
@@ -149,6 +154,7 @@ function closeOverlay() {
     dismissed = true;
     try { if (windowView) windowView.close(); } catch (_) {}
     windowView = null;
+    toast('刷新恢复悬浮窗');
     notifyAvailable();
 }
 function textView(text, size, color) {

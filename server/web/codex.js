@@ -283,11 +283,13 @@
     for (const key of ['createdAt', 'updatedAt']) if (Number.isFinite(raw[key])) entry[key] = raw[key];
     entry.metadataLoaded = true;
   }
+  const threadActionPending = new Set();
   function sortedThreads() {
-    return [...(session?.threads || [])].sort((a,b) => (b[threadSort] || 0) - (a[threadSort] || 0) || (b.createdAt || 0) - (a.createdAt || 0) || a.id.localeCompare(b.id));
+    return [...(session?.threads || [])].sort((a,b) => Number(!!b.pinned) - Number(!!a.pinned) || (b[threadSort] || 0) - (a[threadSort] || 0) || (b.createdAt || 0) - (a.createdAt || 0) || a.id.localeCompare(b.id));
   }
   function renderThreadPicker() {
     const list = $('session-list'), focusedId = document.activeElement?.dataset?.sessionId;
+    const focusedAction = document.activeElement?.dataset?.threadActionId;
     list.replaceChildren();
     for (const key of ['updatedAt', 'createdAt']) $('sort-' + key).setAttribute('aria-pressed', String(threadSort === key));
     for (const entry of sortedThreads()) {
@@ -303,6 +305,10 @@
       badge.classList.toggle('is-active', activityKnown && active);
       badge.textContent = activityKnown ? (active ? '运行中' : '空闲') : '状态未知';
       marks.append(badge);
+      if (entry.pinned) {
+        const mark = document.createElement('span'); mark.className = 'session-mark'; mark.textContent = '已置顶';
+        marks.append(mark);
+      }
       if (entry.id === thread) {
         const mark = document.createElement('span'); mark.className = 'session-mark'; mark.textContent = '当前';
         marks.append(mark);
@@ -313,9 +319,123 @@
         button.disabled = true;
         try { await openThread(entry.id); $('session-dialog').close(); } catch(e) { fail(e); button.disabled = false; }
       };
-      list.append(button);
+      const row = document.createElement('div'); row.className = 'session-row';
+      row.append(button);
+      if (session.threadActions) {
+        const more = document.createElement('button');
+        more.type = 'button'; more.className = 'session-more'; more.textContent = '⋯';
+        more.dataset.threadActionId = entry.id;
+        more.setAttribute('aria-label', title.textContent + '的操作');
+        more.setAttribute('aria-haspopup', 'dialog');
+        more.onclick = () => openThreadActions(entry.id);
+        row.append(more);
+      }
+      list.append(row);
       if (focusedId === entry.id) button.focus({preventScroll:true});
+      if (focusedAction === entry.id) row.querySelector('.session-more')?.focus({preventScroll:true});
     }
+    if (threadActionSheet.open) renderThreadActions();
+  }
+  const threadActionSheet = $('thread-action-sheet');
+  for (const dialog of [threadActionSheet, $('thread-delete-dialog')]) {
+    function isBackdrop(event) {
+      if (event.target !== dialog) return false;
+      const {left, right, top, bottom} = dialog.getBoundingClientRect();
+      return event.clientX < left || event.clientX >= right ||
+        event.clientY < top || event.clientY >= bottom;
+    }
+    let pressedBackdrop = false;
+    dialog.addEventListener('pointerdown', event => { pressedBackdrop = isBackdrop(event); });
+    dialog.addEventListener('pointercancel', () => { pressedBackdrop = false; });
+    dialog.addEventListener('click', event => {
+      if (pressedBackdrop && isBackdrop(event)) dialog.close('cancel');
+      pressedBackdrop = false;
+    });
+  }
+  let actionThread = null;
+  function restoreActionFocus(id) {
+    const trigger = [...$('session-list').querySelectorAll('.session-more')].find(button => button.dataset.threadActionId === id);
+    (trigger || $('session-close')).focus({preventScroll: true});
+  }
+  function openThreadActions(id) {
+    const owner = session, connection = socket;
+    actionThread = id;
+    threadActionSheet.returnValue = '';
+    renderThreadActions();
+    threadActionSheet.addEventListener('close', () => {
+      actionThread = null;
+      if (session !== owner || socket !== connection) return;
+      const entry = session.threads.find(item => item.id === id);
+      if (!entry) return;
+      restoreActionFocus(id);
+      if (threadActionSheet.returnValue === 'pin') {
+        changeThread(id, 'thread/pin', {pinned: !entry.pinned});
+      } else if (threadActionSheet.returnValue === 'delete' && !session.active?.[id]) {
+        confirmThreadDeletion(entry);
+      }
+    }, {once: true});
+    threadActionSheet.showModal();
+  }
+  function renderThreadActions() {
+    const entry = session?.threads.find(item => item.id === actionThread);
+    if (!entry) {
+      if (threadActionSheet.open) threadActionSheet.close('cancel');
+      return;
+    }
+    $('thread-action-name').textContent = entry.title || '未命名会话';
+    const active = !!session.active?.[entry.id];
+    const unavailable = !activityKnown || threadActionPending.has(entry.id);
+    $('thread-action-pin').textContent = entry.pinned ? '取消置顶' : '置顶对话';
+    $('thread-action-pin').disabled = unavailable;
+    $('thread-action-delete').disabled = unavailable || active;
+    $('thread-action-unavailable').hidden = !active;
+  }
+  async function changeThread(id, method, params = {}) {
+    if (threadActionPending.has(id) || !activityKnown) return;
+    const owner = session;
+    threadActionPending.add(id);
+    if ($('session-dialog').open) renderThreadPicker();
+    try {
+      await rpc(method, {threadId: id, ...params});
+    } catch (error) {
+      if (session === owner) {
+        $('session-action-status').textContent = error.message;
+        fail(error);
+      }
+    } finally {
+      threadActionPending.delete(id);
+      if (session === owner && $('session-dialog').open) renderThreadPicker();
+    }
+  }
+  function confirmThreadDeletion(entry) {
+    if (submitting) return;
+    const dialog = $('thread-delete-dialog'), owner = session, connection = socket;
+    $('thread-delete-name').textContent = entry.title || '未命名会话';
+    dialog.returnValue = '';
+    dialog.addEventListener('close', () => {
+      if (session !== owner || socket !== connection) return;
+      restoreActionFocus(entry.id);
+      if (dialog.returnValue === 'delete') changeThread(entry.id, 'thread/delete');
+    }, {once: true});
+    dialog.showModal();
+  }
+  function applyThreadChange(change) {
+    const entry = session?.threads.find(item => item.id === change.threadId);
+    if (!entry) return;
+    if (change.deleted) {
+      session.threads = session.threads.filter(item => item !== entry);
+      if (thread === entry.id) {
+        thread = null; turn = null; ++threadSelection;
+        resetMessages(); welcome(); renderExecutionMode(); AICTUsage.select(targetDevice, null, rpc);
+        const next = sortedThreads()[0];
+        (next ? openThread(next.id) : newThread()).catch(fail);
+      }
+      $('session-load-status').textContent = `${session.threads.length} 个会话`;
+    } else {
+      entry.pinned = change.pinned;
+    }
+    $('session-action-status').textContent = change.deleted ? '已删除对话' : change.pinned ? '已置顶对话' : '已取消置顶';
+    threadOptions();
   }
   async function refreshThreadMetadata() {
     const currentSession = session, connection = socket, run = ++metadataRun;
@@ -348,7 +468,7 @@
   async function openThread(id, shouldOpen = () => true) {
     const owner = session, connection = socket, selection = ++threadSelection;
     const result = await rpc('thread/read', {threadId: id, includeTurns: true});
-    if (session !== owner || socket !== connection || threadSelection !== selection || !shouldOpen()) return;
+    if (session !== owner || socket !== connection || threadSelection !== selection || !owner.threads.some(entry => entry.id === id) || !shouldOpen()) return;
     mergeThreadMetadata(result.thread);
     thread = id; turn = session.active?.[id]; renderExecutionMode(); resetMessages(); AICTUsage.select(targetDevice, thread, rpc);
     for (const t of result.thread.turns || []) for (const item of t.items || []) renderItem(item);
@@ -578,6 +698,7 @@
     AICTAutoContinue.event(msg);
     AICTUsage.event(msg);
     const meta = msg.params || {};
+    if (msg.method === 'aict/threadChanged') { applyThreadChange(meta); return; }
     if (msg.method === 'thread/name/updated') { mergeThreadMetadata({id:meta.threadId,name:meta.threadName ?? meta.name}); threadOptions(); updateRequestSession(); }
     if (msg.method === 'aict/autoApproveTurns') { autoApproveTurns = new Map(meta.turns); renderExecutionMode(); return; }
     updateActiveTurn(msg);
@@ -709,7 +830,7 @@
             if (connection !== socket) return;
             if (threadSelection === selection) {
               if (overlaySelection) await openOverlayThread();
-              else if (session.threads.length) await openThread(thread && session.threads.some(t => t.id === thread) ? thread : session.threads[0].id);
+              else if (session.threads.length) await openThread(thread && session.threads.some(t => t.id === thread) ? thread : sortedThreads()[0].id);
               else await newThread();
             }
           } catch (e) { if (connection === socket && threadSelection <= selection + 1) fail(e); }
@@ -730,22 +851,44 @@
   window.addEventListener('pagehide', () => { pageClosing = true; clearTimeout(reconnectTimer); reconnectTimer = null; });
   window.addEventListener('pageshow', () => { pageClosing = false; if (!socket || socket.readyState > WebSocket.OPEN) connect(); });
   window.addEventListener('online', () => { if (!socket || socket.readyState > WebSocket.OPEN) connect(); });
+  const sharedAttachments = [];
+  const hasAttachments = () => selectedFiles().length > 0 || sharedAttachments.length > 0;
+  window.aictAcceptSharedDraft = draft => {
+    if (submitting) return false;
+    const prompt = $('prompt');
+    if (draft.text) prompt.value += (prompt.value ? '\n\n' : '') + draft.text;
+    for (const file of draft.files) sharedAttachments.push({...file, device: draft.device});
+    renderAttachments();
+    resizePrompt();
+    if (draft.error) status(draft.error, 'error');
+    if (sharedAttachments.some(file => file.device !== targetDevice)) {
+      status('分享附件位于本机项目，请切换到本机后发送。' + (draft.error ? ' ' + draft.error : ''), 'error');
+    }
+    return true;
+  };
   $('composer').onsubmit = async e => {
     e.preventDefault();
     const text = $('prompt').value.trim();
-    if ((!text && !selectedFiles().length) || submitting) return;
+    if ((!text && !hasAttachments()) || submitting) return;
+    if (sharedAttachments.some(file => file.device !== session?.device)) {
+      status('分享附件位于本机项目，请切换到本机后发送。', 'error');
+      return;
+    }
     if (!activityKnown || socket?.readyState !== WebSocket.OPEN) {
       status('连接尚未就绪，请稍后重试', 'connecting');
       return;
     }
-    if (!thread || creatingThread) {
+    if (!thread || creatingThread || threadActionPending.has(thread)) {
       status('正在打开对话，请稍后发送', 'ready');
       return;
     }
     submitting = true; $('target-device').disabled = true; scrollLatest(true);
     $('send').disabled = true;
     try {
-      const input = [], uploads = [];
+      const input = [], uploads = [...sharedAttachments];
+      for (const file of sharedAttachments) {
+        if (file.mime?.startsWith('image/')) input.push({type: 'localImage', path: session.cwd + '/' + file.projectPath});
+      }
       for (const file of selectedFiles()) {
         if (file.size > 50 * 1024 * 1024) throw Error('单个附件请小于 50 MiB');
         status('正在上传附件 · ' + file.name, 'working');
@@ -760,6 +903,7 @@
       await sendInput(thread, turn, input, $('model').value || undefined, $('effort').value || undefined);
       AICTAutoContinue.cancel(thread);
       const entry = session.threads.find(t => t.id === thread); if (entry) { entry.updatedAt = Math.floor(Date.now()/1000); threadOptions(); }
+      sharedAttachments.length = 0;
       $('prompt').value = ''; $('images').value = ''; $('photos').value = ''; $('prompt').required = true; resizePrompt(); renderAttachments();
     } catch (e) { fail(e); } finally { submitting = false; $('target-device').disabled = false; openOverlayThread(); $('send').disabled = false; }
   };
@@ -777,8 +921,30 @@
   $('settings').addEventListener('click', e => { if (e.target === $('settings')) { const r = e.target.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) e.target.close(); } });
   function resizePrompt() { $('prompt').style.height = 'auto'; $('prompt').style.height = Math.min($('prompt').scrollHeight, 146) + 'px'; if (followLatest) scrollLatest(); }
   function selectedFiles() { return [...$('images').files, ...$('photos').files]; }
-  function renderAttachments() { $('attachments').replaceChildren(); for (const file of selectedFiles()) { const chip = document.createElement('span'); chip.className = 'attachment-chip'; chip.textContent = file.name + ' · ' + (file.size / 1024 < 1024 ? Math.ceil(file.size / 1024) + ' KB' : (file.size / 1024 / 1024).toFixed(1) + ' MB'); $('attachments').append(chip); } }
-  $('images').onchange = $('photos').onchange = () => { renderAttachments(); $('prompt').required = !selectedFiles().length; };
+  function renderAttachments() {
+    const container = $('attachments');
+    container.replaceChildren();
+    const append = (name, size, onRemove) => {
+      const chip = document.createElement(onRemove ? 'button' : 'span');
+      chip.className = 'attachment-chip';
+      const sizeLabel = size < 1024 * 1024 ? Math.ceil(size / 1024) + ' KB' : (size / 1024 / 1024).toFixed(1) + ' MB';
+      chip.textContent = name + ' · ' + sizeLabel;
+      if (onRemove) {
+        chip.type = 'button';
+        chip.textContent += ' ×';
+        chip.setAttribute('aria-label', '移除附件 ' + name);
+        chip.onclick = () => { if (!submitting) onRemove(); };
+      }
+      container.append(chip);
+    };
+    for (const file of selectedFiles()) append(file.name, file.size);
+    for (const file of sharedAttachments) append(file.name, file.bytes, () => {
+      sharedAttachments.splice(sharedAttachments.indexOf(file), 1);
+      renderAttachments();
+    });
+    $('prompt').required = !hasAttachments();
+  }
+  $('images').onchange = $('photos').onchange = renderAttachments;
   $('prompt').addEventListener('input', resizePrompt);
   $('prompt').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); $('composer').requestSubmit(); } });
   stream.addEventListener('click', e => { const suggestion = e.target.closest('[data-prompt]'); if (suggestion) { $('prompt').value = suggestion.dataset.prompt; resizePrompt(); $('prompt').focus(); } });
