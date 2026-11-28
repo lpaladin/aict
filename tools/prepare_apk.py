@@ -37,6 +37,7 @@ for activity in app.findall('activity'):
             activity.remove(intent)
 
 for name in (
+    'android.permission.ACCESS_NETWORK_STATE',
     'android.permission.FOREGROUND_SERVICE_SPECIAL_USE',
     'android.permission.REQUEST_INSTALL_PACKAGES',
     'android.permission.BLUETOOTH_CONNECT',

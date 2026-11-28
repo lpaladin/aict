@@ -53,6 +53,7 @@ AICT 顶部「应用文件夹」自动列出 artifacts/ 中的 HTML 网页。
   手机文件权限仍受 Android 限制；失败时先检查 capabilities.paths、file.list、SAF 授权，不要用模型中转内容。
   用户在对话中上传的文件已在 imports/；用户要分析时再用本地工具读取，而不是重新从手机分块读进上下文。
 - capabilities {}：运行时、设备、权限状态。
+- forward.open {remotePort,localPort?}、forward.list {}、forward.close {localPort}：管理当前手机的额外 TCP 转发。目标为服务器 127.0.0.1 的配置端口，手机端只监听 127.0.0.1。省略 localPort 由系统分配；将实际端口交给同手机播放器。额外转发默认开启，可在 APK 权限中心关闭。
 - script.execute {source, args?}：AutoJs6/Rhino JavaScript，自动提供 args；最后的表达式为 JSON 返回值。
   示例 source='toast(args.text); ({ok:true})', args={text:'你好'}。
   支持 Java 互操作；context 是 Android Context，不是浏览器。避免把 Java 对象直接返回。

@@ -1,13 +1,14 @@
 """AICT development gateway: dedicated SSH forwarding, HTTP and bidirectional RPC.
 
 No SSH shell or arbitrary remote forwarding is exposed. Authenticated clients may
-open TCP streams to this gateway's loopback HTTP and RPC services only.
+open TCP streams to gateway services and explicitly configured loopback ports.
 """
 import argparse
 import asyncio
 import json
 import logging
 import os
+import re
 import ipaddress
 import urllib.request
 import secrets
@@ -23,6 +24,7 @@ from aiohttp import web
 
 LOG = logging.getLogger('aict')
 MAX_LINE = 8 * 1024 * 1024
+LAN_DISCOVERY_PORT = 18768
 
 
 class Gateway:
@@ -167,9 +169,29 @@ class Gateway:
         return ws
 
 
+class LanDiscovery(asyncio.DatagramProtocol):
+    def __init__(self, fingerprint, ssh_port):
+        self.fingerprint = fingerprint.encode('ascii')
+        self.ssh_port = str(ssh_port).encode('ascii')
+
+    def connection_made(self, transport):
+        self.transport = transport
+
+    def datagram_received(self, data, sender):
+        if len(data) != len(b'AICT-DISCOVER/1 ') + 32 + 1 + len(self.fingerprint):
+            return
+        match = re.fullmatch(rb'AICT-DISCOVER/1 ([0-9a-f]{32}) ([A-Za-z0-9:+/]+)', data)
+        if match and match[2] == self.fingerprint:
+            # The reply is smaller than the query and contains no device data.
+            self.transport.sendto(b'AICT-HERE/1 ' + match[1] + b' ' + self.ssh_port, sender)
+
+
 class SSHServer(asyncssh.SSHServer):
     def __init__(self, config):
         self.config = config
+
+    def connection_made(self, conn):
+        self.conn = conn
 
     def begin_auth(self, username):
         return True
@@ -181,7 +203,6 @@ class SSHServer(asyncssh.SSHServer):
         if username == self.config['username']:
             return key == self.config['client_public_key']
         # Additional trusted users have their own public key; never use username as a path unchecked.
-        import re
         if not re.fullmatch(r'[a-z][a-z0-9_-]{0,31}', username):
             return False
         try:
@@ -191,8 +212,12 @@ class SSHServer(asyncssh.SSHServer):
             return False
 
     def connection_requested(self, dest_host, dest_port, orig_host, orig_port):
-        return dest_host == '127.0.0.1' and dest_port in {
-            self.config['http_port'], self.config['control_port'], self.config['proxy_port']}
+        if dest_host != '127.0.0.1':
+            return False
+        if dest_port in {self.config['http_port'], self.config['control_port'], self.config['proxy_port']}:
+            return True
+        username = self.conn.get_extra_info('username')
+        return dest_port in self.config.get('forward_ports_by_user', {}).get(username, ())
 
 
 async def pump(reader, writer):
@@ -292,6 +317,13 @@ async def proxy(reader, writer):
 
 async def serve(args):
     config = json.loads((ROOT / '.secrets/server.json').read_text('utf-8'))
+    forward_ports = config.get('forward_ports_by_user', {})
+    if not isinstance(forward_ports, dict) or any(
+        not isinstance(ports, list) or any(type(port) is not int or not 1 <= port <= 65535
+                                          for port in ports)
+        for ports in forward_ports.values()
+    ):
+        raise ValueError('forward_ports_by_user must map SSH usernames to lists of TCP port numbers')
     config['client_public_key'] = asyncssh.read_public_key(ROOT / '.secrets/client.pub')
     gateway = Gateway(config)
     from device_updates import DeviceUpdates
@@ -317,16 +349,28 @@ async def serve(args):
     await web.TCPSite(runner, '127.0.0.1', config['http_port']).start()
     control = await asyncio.start_server(gateway.control, '127.0.0.1', config['control_port'], limit=MAX_LINE)
     proxy_server = await asyncio.start_server(proxy, '127.0.0.1', config['proxy_port'], limit=65536)
+    ssh_port = args.port or config['ssh_port']
+    host_key = asyncssh.read_private_key(ROOT / '.secrets/host')
     ssh = await asyncssh.create_server(
-        lambda: SSHServer(config), args.bind, args.port or config['ssh_port'],
-        server_host_keys=[str(ROOT / '.secrets/host')],
+        lambda: SSHServer(config), args.bind, ssh_port,
+        server_host_keys=[host_key],
         encoding=None,
     )
+    discovery = None
+    try:
+        discovery, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+            lambda: LanDiscovery(host_key.get_fingerprint('sha256'), ssh_port),
+            local_addr=(args.bind, LAN_DISCOVERY_PORT),
+        )
+    except OSError as exc:
+        LOG.warning('LAN discovery unavailable on UDP %s: %s', LAN_DISCOVERY_PORT, exc)
     LOG.info('SSH %s:%s; HTTP 127.0.0.1:%s; control 127.0.0.1:%s',
              args.bind, args.port or config['ssh_port'], config['http_port'], config['control_port'])
     try:
         await asyncio.Future()
     finally:
+        if discovery is not None:
+            discovery.close()
         ssh.close()
         control.close()
         proxy_server.close()

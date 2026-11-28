@@ -34,12 +34,14 @@ public final class NativeRuntime {
                             .put("credentialId", ConnectionService.credentialId)
                             .put("installationId", ConnectionService.installationId)
                             .put("connected", ConnectionService.connected)
+                            .put("connectionRoute", ConnectionService.connectionRoute)
+                            .put("localForwardingEnabled", ConnectionService.allowsForwarding(context))
                             .put("allFiles", Build.VERSION.SDK_INT >= 30 && android.os.Environment.isExternalStorageManager())
                             .put("overlay", Settings.canDrawOverlays(context))
                             .put("visionService", VisionService.instance != null)
                             .put("paths", new JSONObject().put("files",context.getFilesDir().getAbsolutePath()).put("downloads",context.getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS).getAbsolutePath()))
                             .put("treeUri",context.getSharedPreferences("aict",Context.MODE_PRIVATE).getString("treeUri",null))
-                            .put("features",new JSONArray(new String[]{"script.execute","script.start","task.cancel","events","file.chunks","file.contentUri","download.resume","camera.capture","camera.video","ui.action"}))
+                            .put("features",new JSONArray(new String[]{"script.execute","script.start","task.cancel","events","file.chunks","file.contentUri","download.resume","camera.capture","camera.video","ui.action","forward.open","forward.list","forward.close"}))
                             .put("autojsRuntime", autoJs() != null)));
                         break;
                     case "permissions.open":

@@ -11,7 +11,37 @@ sys.path.insert(0, str(ROOT / 'server'))
 import asyncssh
 import aiohttp
 from aiohttp import web
-from main import Gateway, SSHServer, proxy
+from main import Gateway, LanDiscovery, SSHServer, proxy
+
+
+class LanDiscoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_matching_gateway_advertises_ssh_port(self):
+        loop = asyncio.get_running_loop()
+        fingerprint = 'SHA256:abcdefghijklmnopqrstuv0123456789+/abcdefghi'
+        nonce = b'0123456789abcdef0123456789abcdef'
+        received = asyncio.Queue()
+
+        class Probe(asyncio.DatagramProtocol):
+            def datagram_received(self, data, sender):
+                received.put_nowait((data, sender))
+
+        server, _ = await loop.create_datagram_endpoint(
+            lambda: LanDiscovery(fingerprint, 19199), local_addr=('127.0.0.1', 0))
+        client, _ = await loop.create_datagram_endpoint(
+            Probe, remote_addr=server.get_extra_info('sockname'))
+        try:
+            query = b'AICT-DISCOVER/1 ' + nonce + b' ' + fingerprint.encode()
+            client.sendto(query[:-1] + b'X')
+            client.sendto(query.replace(b'0123', b'ZZZZ', 1))
+            with self.assertRaises(asyncio.TimeoutError):
+                await asyncio.wait_for(received.get(), 0.1)
+            client.sendto(query)
+            response, sender = await asyncio.wait_for(received.get(), 1)
+            self.assertEqual(response, b'AICT-HERE/1 ' + nonce + b' 19199')
+            self.assertEqual(sender, server.get_extra_info('sockname'))
+        finally:
+            client.close()
+            server.close()
 
 
 class GatewayTests(unittest.IsolatedAsyncioTestCase):
@@ -61,6 +91,33 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
                 await asyncssh.connect('127.0.0.1', self.ssh_port, username='user2', client_keys=[self.client_key], known_hosts=self.known)
             self.assertFalse(SSHServer(self.config).validate_public_key('../user2', second.convert_to_public()))
             self.assertFalse(SSHServer(self.config).validate_public_key('unknown', second.convert_to_public()))
+
+    async def test_extra_forwarding_is_limited_to_configured_user_and_loopback_port(self):
+        async def echo(reader, writer):
+            try:
+                writer.write(await reader.readexactly(4))
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        async with await asyncio.start_server(echo, '127.0.0.1', 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            self.config['forward_ports_by_user'] = {'other': [port]}
+            with self.assertRaises(asyncssh.ChannelOpenError):
+                await self.ssh.open_connection('127.0.0.1', port)
+            self.config['forward_ports_by_user']['test'] = [port]
+            with self.assertRaises(asyncssh.ChannelOpenError):
+                await self.ssh.open_connection('localhost', port)
+            async with await self.ssh.forward_local_port('127.0.0.1', 0, '127.0.0.1', port) as forward:
+                reader, writer = await asyncio.open_connection('127.0.0.1', forward.get_port())
+                try:
+                    writer.write(b'media')
+                    await writer.drain()
+                    self.assertEqual(await asyncio.wait_for(reader.readexactly(4), 3), b'medi')
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
 
     async def echo(self, request):
         return web.Response(body=await request.read(), headers={'Set-Cookie': 'session=test; HttpOnly'})

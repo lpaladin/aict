@@ -44,6 +44,16 @@ public final class PermissionsActivity extends Activity {
         TextView remoteHelp = new TextView(this);
         remoteHelp.setText("开启后，本机才会出现在其他设备的控制目标列表中。关闭不影响在本机使用 AIct。\n");
         list.addView(remoteHelp);
+        Switch forwarding = new Switch(this);
+        forwarding.setText("允许 Agent 为本机应用开放额外端口");
+        forwarding.setChecked(ConnectionService.allowsForwarding(this));
+        forwarding.setOnCheckedChangeListener((button, enabled) ->
+            getSharedPreferences("aict", MODE_PRIVATE).edit()
+                .putBoolean(ConnectionService.ALLOW_FORWARDING, enabled).apply());
+        list.addView(forwarding);
+        TextView forwardingHelp = new TextView(this);
+        forwardingHelp.setText("开启后，本机应用可访问 Agent 开放的 127.0.0.1 端口。关闭会重连 SSH 并终止所有额外转发。");
+        list.addView(forwardingHelp);
         add("SSH 连接端口", this::editSshPort);
         add("逐项申请常用权限", () -> {
             queue.clear();

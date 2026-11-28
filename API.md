@@ -109,3 +109,27 @@ POST 使用 `{method, params, waitSeconds?}`，waitSeconds 范围 1..3600。
 这些 HTTP 接口仅监听服务端回环地址，手机通过 SSH 访问。
 
 诊断页：`/diagnostics`；更新下载：`/download/aict-latest.apk`。
+
+
+## 局域网直连和手机应用端口转发
+
+客户端连接或切换网络时，在当前 Wi‑Fi 或有线 IPv4 网络上通过 UDP 18768 广播发现网关。
+网关用实际的 SSH 监听端口回复。客户端只接受同网段的回复，并在 SSH 握手中继续校验
+APK 固定的主机密钥。服务端需允许来自局域网的 UDP 18768 和 SSH TCP 端口。
+发现超时或握手失败时，客户端使用原服务器地址。
+`capabilities` 的 `connectionRoute` 返回 `lan`、`configured` 或空字符串（未连接）。
+
+在网关 `.secrets/server.json` 的 `forward_ports_by_user` 中登记对应 SSH 用户可访问的
+服务器本机 TCP 端口，例如 `{"aict_demo":[8096]}`。配置随网关启动加载。
+媒体服务应监听网关的 `127.0.0.1:8096`。Android 的额外端口转发默认开启。用户可在 AICT 权限中心关闭，已有的关闭设置会保留。
+
+| Agent 的 `phone_call` 方法 | 参数 | 结果 |
+| --- | --- | --- |
+| `forward.open` | `{"remotePort":8096}`，可选 `localPort`，省略或填 `0` 由系统分配 | `host`、`localPort`、`remotePort` |
+| `forward.list` | `{}` | 当前 SSH 会话中的转发列表 |
+| `forward.close` | `{"localPort":实际端口}` | `closed` 表示监听是否已关闭 |
+
+假如返回 `localPort` 为 49152，手机播放器可打开
+`http://127.0.0.1:49152/媒体路径`。同一手机上的其他应用也能连接该端口。
+`forward.close` 停止接受新连接，已建立的流可播放到结束。关闭权限或断开 SSH
+会终止监听和活动连接。SSH 重连后需重新打开转发。
